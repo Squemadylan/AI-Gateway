@@ -4094,6 +4094,7 @@ function renderStrategy() {
   // 靠闭包一层层往外传会让 renderStrategy 变成一棵难以追踪的表达式树。
   const acc = buildAccountStrategyCard(fo);
   const par = buildFailoverParamsCard(fo);
+  const sec = buildSecurityCard(st);
   const statusCard = buildStrategyStatusCard();
   S.strategyCtx = {
     cbFo: acc.cbFo,
@@ -4112,9 +4113,14 @@ function renderStrategy() {
     inQueue: par.inQueue,
     inMcMs: par.inMcMs,
     inMcMax: par.inMcMax,
+    cbSanitize: sec.cbSanitize,
+    cbPrivacy: sec.cbPrivacy,
+    inMinInterval: sec.inMinInterval,
+    inJitterMs: sec.inJitterMs,
   };
   body.appendChild(acc.card);
   body.appendChild(par.card);
+  body.appendChild(sec.card);
   body.appendChild(statusCard);
 
   paintStrategyStatus();
@@ -4199,6 +4205,51 @@ function buildFailoverParamsCard(fo) {
     inThreshold, inOpenMs, inHalfOpen, inPerAccount, inGlobal, inQueue, inMcMs, inMcMax };
 }
 
+/**
+ * 安全防护卡。
+ *
+ * core 早就实现了一整套（敏感词零宽脱敏 / 账号级限速 / 本地隐私占位符），
+ * 但界面从来没有入口，只能手改 `settings/security.json`。
+ * 三个开关的含义差别很大，说明文字必须写「代价是什么」，不能只复述开关名。
+ */
+function buildSecurityCard(st) {
+  const { card, body } = formCard('安全防护', '改动即时写入 settings/security.json');
+  const grid = el('div', 'form-grid');
+  const sec = st.security || {};
+
+  const cbSanitize = el('input');
+  cbSanitize.type = 'checkbox';
+  cbSanitize.checked = !!sec.sanitizeEnabled;
+  const swSanitize = el('label', 'switch');
+  swSanitize.append(cbSanitize, el('span', 'track'), el('span', '', '启用'));
+  grid.appendChild(labelField('敏感词零宽脱敏', swSanitize,
+    el('span', 'desc', '只改 system 消息里的敏感词（插零宽空格），不动 user 输入')));
+
+  const cbPrivacy = el('input');
+  cbPrivacy.type = 'checkbox';
+  cbPrivacy.checked = !!sec.privacyRedactionEnabled;
+  const swPrivacy = el('label', 'switch');
+  swPrivacy.append(cbPrivacy, el('span', 'track'), el('span', '', '启用'));
+  grid.appendChild(labelField('本地隐私脱敏', swPrivacy,
+    el('span', 'desc', 'Key / 邮箱出网前换成占位符，响应回来再还原；上游看到的是记号')));
+
+  const inMinInterval = numInput(sec.minIntervalMillis || 0, 0, 0, 60000);
+  grid.appendChild(labelField('账号限速间隔（毫秒）', inMinInterval,
+    el('span', 'desc', '两次上游调用的最短间隔；0 不限，开启会明显拖慢首字')));
+
+  const inJitterMs = numInput(sec.jitterMillis || 0, 0, 0, 10000);
+  grid.appendChild(labelField('节拍抖动（毫秒）', inJitterMs,
+    el('span', 'desc', '在间隔上叠加 0–该值的随机，避免固定节奏被风控打标')));
+
+  if ((sec.extraWordsCount || 0) > 0) {
+    grid.appendChild(labelField('自定义敏感词', el('span', 'tag', `${sec.extraWordsCount} 条`),
+      el('span', 'desc', '词表在 settings/security.json 里编辑，本页只读')));
+  }
+
+  body.appendChild(grid);
+  return { card, body, cbSanitize, cbPrivacy, inMinInterval, inJitterMs };
+}
+
 function buildStrategyStatusCard() {
   const card = el('div', 'card');
   card.appendChild(headWith('运行现状', '仅内存态，重启即清空'));
@@ -4263,6 +4314,12 @@ async function saveStrategy(btn) {
       modelCooldown: {
         cooldownMs: need(ctx.inMcMs, '模型级冷却'),
         maxCooldownMs: need(ctx.inMcMax, '冷却上限'),
+      },
+      security: {
+        sanitizeEnabled: ctx.cbSanitize.checked,
+        privacyRedactionEnabled: ctx.cbPrivacy.checked,
+        minIntervalMillis: need(ctx.inMinInterval, '账号限速间隔'),
+        jitterMillis: need(ctx.inJitterMs, '节拍抖动'),
       },
     };
   } catch (e) {

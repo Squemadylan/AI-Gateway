@@ -310,6 +310,16 @@ internal class UiRoutes(private val host: EngineHost) {
                         })
                     }
             })
+            // 安全防护：core 早就有这一整套（脱敏 / 限速 / 隐私占位符），但界面从来没有入口，
+            // 只能改 settings/security.json。隐私脱敏是上游 v2.37.2 新增的能力，默认关闭。
+            val sec = engine.securitySettings()
+            add("security", JsonObject().apply {
+                addProperty("sanitizeEnabled", sec.sanitizeEnabled)
+                addProperty("minIntervalMillis", sec.minIntervalMillis)
+                addProperty("jitterMillis", sec.jitterMillis)
+                addProperty("extraWordsCount", sec.extraWords.size)
+                addProperty("privacyRedactionEnabled", sec.privacyRedactionEnabled)
+            })
         }
         // 媒体实测页据此提示「有没有可用供应商」，避免用户点了才看到 400。
         // 注意能力不是在 ProviderCapability 里声明的——图像/音频是 Provider 的
@@ -979,6 +989,24 @@ internal class UiRoutes(private val host: EngineHost) {
             routes = cur.routes,
         )
         engine.updateFailoverSettings(updated)
+        // 安全防护与故障转移同一页：只覆盖请求体里显式给出的字段，
+        // 漏传（老前端）时保留当前值，别把用户手改过的 security.json 洗掉。
+        val secReq = req.json.child("security")
+        if (secReq != null) {
+            val curSec = engine.securitySettings()
+            engine.updateSecuritySettings(
+                curSec.copy(
+                    sanitizeEnabled = secReq.boolOr("sanitizeEnabled", curSec.sanitizeEnabled),
+                    minIntervalMillis = secReq.long("minIntervalMillis", curSec.minIntervalMillis)
+                        .coerceIn(0L, 60_000L),
+                    jitterMillis = secReq.long("jitterMillis", curSec.jitterMillis)
+                        .coerceIn(0L, 10_000L),
+                    privacyRedactionEnabled = secReq.boolOr(
+                        "privacyRedactionEnabled", curSec.privacyRedactionEnabled,
+                    ),
+                ),
+            )
+        }
         return UiOut.Json(JsonObject().apply {
             addProperty("ok", true)
             addProperty("message", "策略已保存")

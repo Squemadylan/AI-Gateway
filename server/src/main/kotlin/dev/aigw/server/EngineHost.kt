@@ -127,7 +127,11 @@ class EngineHost(val dataDir: File) {
     /** 重新计算模型数快照。失败保留上一份（宁可显示旧数字，也不要把界面置空）。 */
     fun refreshModelMeta() {
         runCatching {
-            val all = engine.cachedExposedModels()
+            // 这里用 `exposedModels()` 而不是 `cachedExposedModels()`：本条跑在
+            // [metaExecutor] 后台线程上，允许它按 core 的 5 秒预算去聚合一次上游
+            // （快照失效时先返回旧值、后台再刷）。心跳路径永远只读 [modelMeta] 字段，
+            // 所以「聚合一次」只会发生在这个线程，不会拖住界面。
+            val all = engine.exposedModels()
             // 路由组（`group/auto` 之类）不是上游模型：把它们算进「模型数」会让
             // 「一个模型都没拉」显示成「1 个」，用户按这个数字去模型页找一个不存在的模型。
             val groups = all.count { it.providerId.startsWith(GROUP_PREFIX) }
@@ -540,7 +544,7 @@ class EngineHost(val dataDir: File) {
  * **改这里必须同步改更新源仓库的 update.json**：
  * 本值即客户端判定「是否有新版」的基准（见 [UpdateChecker]）。
  * 只升这里不升清单 → 所有已装实例立刻看到"有新版本"；只升清单不升这里 → 永远不提示。 */
-const val APP_VERSION = "0.9.8"
+const val APP_VERSION = "0.9.9"
 
 /** 额度单位转成前端显示用的后缀。 */
 fun unitSuffix(unit: String): String = when (unit) {

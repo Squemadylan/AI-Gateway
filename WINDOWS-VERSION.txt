@@ -1,9 +1,18 @@
 AI Gateway · Windows Edition
-版本 0.9.8    构建日期 2026-11-18
-上游 github.com/xibai6668/Android-AI-gateway   跟随 ref: main（最新 release v2.37.1，本地 core 已与 main 同步）
+版本 0.9.9    构建日期 2026-11-19
+上游 github.com/xibai6668/Android-AI-gateway   跟随 ref: main（release tag 仍停 v2.37.1，main 已是 v2.37.2，本地 core 已同步）
 
 ======================================================================
-零、0.9.8 变更（本轮）
+零、0.9.9 变更（本轮，详见文末「六·o」）
+======================================================================
+核心：把 core 整包同步到上游 main（v2.37.2），再手工打回 4 处自家补丁。
+  上游新增：Anthropic Messages 协议入口 / 本地隐私脱敏 / /v1/models 快照与
+  stale-while-revalidate / CodeBuddy 指纹打散。
+  本项目新增：高级策略页「安全防护」卡（脱敏、隐私占位符、限速、抖动四个控件）。
+  修掉上游一个真 bug：流式还原时完整占位符落在 chunk 末尾会被截断两字符，
+  占位符原样泄漏给客户端（已加回归用例，core 测试 861 → 862）。
+
+零·上一轮、0.9.8 变更
 ======================================================================
 定位：仅 LLM 转发。**本项目不跟进上游的图片生成与语音转写**，
 「媒体实测」页从侧栏移除（代码保留，后续要跟进时加回 nav 一行即可）。
@@ -23,3 +32,1471 @@ AI Gateway · Windows Edition
      • 开机先读它，命中则网关那步根本不会执行（连端口都不会监听）
    并且**强制态出现后停掉整个 6 小时定时器**：已经判定必须更新，继续打 GitHub 没意义。
    被强制的用户重启多少次都解不开，装到足够新的版本才恢复。
+
+3. 关闭按钮语义（真 bug 修复）
+   标题栏 X 原来调 `Owner.Close()`，而 `Form.Close()` 的 `CloseReason` 是 `None`、
+   不是 `UserClosing`，于是 `OnFormClosing` 里「UserClosing 才收进托盘」的分支不命中
+   → 直接真退出，`finally` 里的 `ServerLauncher.Stop()` 连后端一起杀掉。
+   用户看到的就是「点 X 后台服务没了、右下角托盘图标也消失」。
+   修法：① 标题栏改走显式 `HideToTray()`；② `OnFormClosing` 不再依赖 CloseReason，
+   任何非强制关闭一律收进托盘。**真退出只剩托盘菜单「退出」一条路**。
+   强制更新弹窗里的「退出应用」也随之改名「关闭窗口」（它现在只隐藏窗口）。
+
+======================================================================
+零·上一轮、0.9.7 变更：自定义供应商出图
+======================================================================
+问题  自定义供应商能出图吗？不能 —— `CustomProvider.supportsImageGeneration` 恒为
+      继承默认 false，于是 `/v1/images/generations` 的候选表里永远只有 antigravity，
+      而本机 antigravity 0 账号 → 媒体实测页的出图永远是
+      「没有支持图片生成的供应商可用」。上一版给这家供应商补了转写，出图这一半仍是断的。
+
+改动  config 加一列 `imageModels`（默认空 = 不支持出图，与升级前行为完全一致）
+      core/provider/custom/CustomProvider.kt
+        覆盖 `supportsImageGeneration` = config.supportsImage
+        实现 `generateImage`：POST `<base>/images/generations`，客户端原始 JSON 体直通
+        **不做模型归一化**：`custom:` 下的模型名就是上游真名，resolveModel 的 auto
+          回落会挑到目录里第一个模型，那多半是文本模型 —— 等于凭空编造
+        取模型优先级：网关解析出的 model → 原始体里的 model → 配置里第一个图像模型
+        解析 data[]：b64_json 与 url 都认（Antigravity 只给 base64，中转站常给外链）
+        normalizeBaseUrl 新增剥 `/images/generations` 尾巴
+      server/UiRoutes.kt
+        GET /ui/custom 增加 supportsImage / imageCount / imageModels / imageEndpoint
+        POST /ui/custom/save 接收 imageModels；**请求没带该字段时保留原值**
+          （旧前端或第三方脚本只传 models，直接当空数组会清掉已配好的出图能力，
+            症状是「编辑一次供应商，出图就坏了」）
+      server/MediaProbe.kt
+        `/ui/media/image` 原来只认 b64_json，上游只回外链时界面上「出图成功但看不到图」
+        现在 b64 与 url 都转成 dataUrl（url 直接透传，不伪造）
+      web/dist/app.js
+        表单新增「图像模型」多行框（占一行，不跟别的字段挤）
+        列表条目加「出图 N」标签
+        媒体实测页空态归因分两句：内置供应商没能力 / **自定义供应商没填图像模型**
+          （这两句混成一句时用户会去账号页翻，而问题在配置里）
+
+顺手修的真 bug（core，带 [aigw-patch]）
+      镜像响应体的 `response_format` 标记错判
+      原先只要客户端要 `url` 就无条件写 `response_format: "b64_json"`。
+      实测：客户端要 url、上游确实回了 http 外链、响应里也真有 url，
+      却仍被标成 b64_json —— 客户端按该字段当 base64 解析，直接失败。
+      改成：只有「要 url 但实际只给了 base64」时才标降级；真有外链时保持沉默。
+
+验证  单测 core/src/test/.../custom/ImageGenerationProviderTest.kt 10 项全过
+      端到端（真网关 + 两个真桩，side 有 POST 日志作独立证据）
+        未声明图像模型 → /ui/media/image 与 /v1 都回「没有支持图片生成的供应商」
+        补 imageModels 后 → 出图成功，桩收到 model=stub-image-1 response_format=b64_json
+        客户端要 url、上游回外链 → 响应里有 url，且**不再**带 response_format
+        客户端要 url、上游只回 b64 → 响应里有 b64_json + response_format: b64_json
+        客户端显式给文本模型 → 上游 400 原话透传（不编造、不换号重试无限循环）
+        转写链路回归 → multipart 逐字节到达，中文文件名与 0x80 字节未被改写
+      巡检：api_probe 79 请求 / 15 个非 200 全是语义正确的 400/404，0 个 500
+            ui_custom_walk 13 步全过、0 异常 0 溢出
+            ui_walk 12 页全过（见下方「巡检自身修复」）
+
+巡检自身修复（不改产品行为，但会误伤下次自动巡检）
+      ui_walk.js 在强制更新态下会卡死
+      更新清单 force=true 且本机版本≤清单版本时，概览页立刻弹**不可关闭**的强制窗，
+      巡检每页第一步就卡在里面 —— 实测 13 分钟一个页面都没走完。
+      新增 dismissForceUpdate()：切页前后各拆一次，并置 S.forceShown/S.forceOpen
+      防心跳把弹窗推回来。判定用标题（强制窗挂在通用 modalMask 上，没有独立 id）。
+
+======================================================================
+一、0.9.6 变更：免服务器强制更新（上一轮）
+======================================================================
+更新源  github.com/Squemadylan/AI-Gateway-updata  根目录 update.json（raw CDN，无需任何后端）
+下载页  pan.quark.cn/s/8fd93162bcab              客户端点「立即更新」跳这里
+
+链路  server/UpdateChecker.kt
+  raw 优先 → Contents API 兜底 → 都失败则放行（不拦用户）
+  判定  版本严格更高 且 (force=true 或 低于 minVersion) 且 downloadUrl 非空
+  缓存  内存 30 分钟 + 数据目录 .update-cache.json 落盘（重启免等 8 秒超时）
+  调度  Main.scheduleUpdateCheck：启动后 40 秒首次，之后每 6 小时
+  端点  POST /ui/update/check?refresh=1（手动强制刷新，绕过缓存）
+
+界面  web/dist/app.js
+  概览页版本条（永远显示）：当前版本 · 状态徽标 · 检查更新 / 下载新版
+  强制态：徽标转警示色、隐藏「检查更新」、按钮变「立即更新」、
+          并立刻弹出不可关闭弹窗（只有「退出应用」和「立即更新」两个出口）
+  心跳  每拍读 state.update；强制结果在非概览页也会弹
+  失败态 显示「检查失败」+ 仍可手动打开下载页，绝不弹强制窗
+
+强制 = 真的不能用（0.9.7 补的，之前只弹窗不禁服务）
+  关键认识：窗口只是拦截的一层，客户端完全不需要理会它 —— Cursor / Claude Code
+  这类工具直接请求 127.0.0.1:8790/v1 就照常能用。只弹窗的「强制」等于没有强制。
+
+  服务端闸门  UpdateChecker.gateClosed（一旦落位在进程内不可撤销）
+    Main.startGateway       闸门已落则**根本不监听端口**（不是起来再停，无中间窗口期）
+    Main.scheduleUpdateCheck 后台查出强制更新后立刻 enforceGate() 停网关
+    EngineHost.snapshot()   每拍心跳顺带 enforceGate()，2 秒内必然停掉活着的网关
+    POST /ui/gateway/start  被拒（否则用户点一下「启动」就绕过整道闸）
+    落盘缓存重启也生效        .update-cache.json 里 mandatory=true 时开机即落闸
+
+  界面锁（web/dist/app.js lockShell）
+    .gate-cover 盖板 z-index 900（低于 modal-mask 1000，弹窗浮在上面）
+    .shell 加 inert 属性：屏幕点不到（pointer-events）+ Tab 键盘也进不去
+    已实测 elementFromPoint 命中侧栏每一项都返回 modalMask，nav.focus() 无效
+    锁解除只在服务端 gateClosed 转 false 时发生（即装完新版重启后）
+
+  验证记录（临时实例 + 预置强制缓存）
+    running=false / gateClosed=true / 日志「强制更新闸门已落，网关不启动」
+    netstat 无网关端口；curl 直连 → Connection refused
+    POST /ui/gateway/start → ok:false「必须更新才能启动网关（当前 0.9.7，0.9.8 已发布）」
+    盖板 hit-test：overview/logs/providers/accounts 全部 → modalMask
+
+发布新版流程
+  1. 打包 AI-Gateway-Windows-<版本>.zip 上传夸克网盘（链接长期复用）
+  2. 改 AI-Gateway-updata 仓库 update.json 的 version / downloadName / notes
+  3. commit + push；客户端最长 6 小时自动看到，手动点「检查更新」立刻看到
+  4. 本仓库 EngineHost.kt 的 APP_VERSION 必须同步升，否则新装版本会一直提示更新
+  5. **force=true 时任何人都跑不起来**：想只提示不锁死，设 force=false 并靠 minVersion
+     卡必须升级的下限版本；闸门落下后同进程无法解除，用户必须装新版重启才能恢复
+
+======================================================================
+二、源码到 Windows 的映射
+======================================================================
+:core   104 文件 / 24021 行 Kotlin，零 android.* import   → 原样复用，未改动一行
+  gateway/GatewayHttpServer.kt   NanoHTTPD，127.0.0.1:8790，有界 32 线程池 / 60s 读超时
+  gateway/GatewayEngine.kt       路由解析、选号、凭证预刷新、Failover（约 60 个公开方法）
+  provider/<7 家>                OpenAI ⇄ 各家私有协议双向转换，核心不变量「OpenAI 进、OpenAI 出」
+  pool / failover / security     账号池、两级熔断、并发闸门、会话亲和、零宽字符脱敏
+  usage / store                  调用记录、用量计量、KeyValueStore 抽象
+:cli    纯 JVM 命令行             → 保留为调试入口 aigw（serve / accounts / credits / models / logs …）
+:app    56 文件 / 17209 行 Android 壳 → 替换为 :desktop（Swing，JDK 自带，零外部 UI 依赖）
+
+Windows 新增（desktop/src/main/kotlin/dev/aigw/desktop/）
+  Main.kt                       单进程 GUI、托盘、单实例锁 8791、侧栏导航 8 页、双主题切换
+  KTheme.kt                     KDesign 令牌（KLIGHT / KDARK）、UIDefaults、圆角卡片/按钮/开关/胶囊/导航项
+  EncryptedKeyValueStore.kt     AES-256-GCM、明文迁移、加密回滚副本 legacy-backup/
+  SettingsPanel.kt              9 类设置 JSON 编辑器 + 客户端密钥管理（白名单 / 限额）
+  Startup.kt                    HKCU Run 开机自启，仅打包版生效
+  SelfCheck.kt                  15 项自检（加密、8 类设置往返、注册表、密钥限额、双主题令牌）
+  LoginProbe.kt                 6 家登录前置探针（URL / 回调端口 / 设备码 state）
+  DeviceCodeLogin.kt            WorkBuddy 设备码登录独立入口：开浏览器 + 3 秒轮询 + 落盘 + 导出凭证 JSON
+
+======================================================================
+三、UI 设计（KDesign 标准 + Wps 档位，浅色 / 暗黑 1:1 对齐）
+======================================================================
+设计源  design/make_ui_kdesign.js      Pencil batch_design 脚本，同一 build(T,label,x) 生成两个 1280×800 frame
+        design/kdesign-light.png / kdesign-dark.png   Pencil 渲染预览
+        design/ai-gateway-kdesign.html               可切换 HTML 成品（kd-design-system.css 内联，标题栏切主题）
+        design/kd-design-system.css                  变量层 + 补齐的 16 个缺失令牌别名
+落地    desktop/.../KTheme.kt         把 HTML 的两套令牌 1:1 映射成 KLIGHT / KDARK
+
+令牌              浅色                 暗黑
+  主色            #1F69E0             #2572E6
+  文字 主/次      #0D0D0D / #6B6B6B  #F5F5F5 / #8A8A8A
+  背景 页/卡片    #F0F0F0 / #FFFFFF  #121212 / #2E2E2E
+  边框            #0D0D0D1F          #F5F5F524
+  成功 / 警告     #418F1F / #E2651A  #459025 / #D0601D
+
+尺寸统一走令牌：间距 8/12/16/20/24、字号 10/12/13/14/18/24、行高 18/20/22/30/36、
+圆角 4/6/8/12、按钮高 32px / radius 6px / 字重 600、卡片 radius 8px、侧栏 200px、导航项 34px。
+组件颜色全部取自 K.p，无硬编码 hex；切主题时替换 K.p → 重建整棵界面树 → 刷新 UIDefaults，
+Metal L&F 保证深色下 TextField / Table / JOptionPane 等原生组件也跟随。
+主题偏好持久化在 <data>/ui-theme.txt（light / dark），默认暗黑；标题栏胶囊点击即时切换。
+
+======================================================================
+四、对外端点（与上游一致）
+======================================================================
+POST /v1/chat/completions        流式 SSE / 非流式 / 多模态
+POST /v1/images/generations      图片生成
+POST /v1/audio/transcriptions    语音转文字（字节级 multipart 解析）
+GET  /v1/models                  聚合模型目录，按开放名单过滤
+GET  /v1/credits                 额度与额度包明细（本机免 Key）
+GET  /api/usage/token            new-api 形状余额
+GET  /v1/health  /v1/route  /v1/usage  /v1/usage/requests  /v1/limit
+GET  /healthz                    存活探针
+GET  /authorize                  Trae 网页登录回调
+鉴权：Bearer / x-goog-api-key / ?key= 三选一，可开「无 Key 调用」；含 CORS 与 OPTIONS 预检。
+
+======================================================================
+五、供应商登录（LoginProbe 2026-11-10 实测，非人工授权验证）
+======================================================================
+id           形态               授权页 / 主机              回调                         前置链路结果
+trae         WEBVIEW_CALLBACK   www.trae.cn                127.0.0.1:51120/authorize   URL OK，端口监听
+antigravity  OAUTH_LOOPBACK     accounts.google.com        localhost:51121/oauth…      URL OK，端口监听
+chatgpt      OAUTH_LOOPBACK     auth.openai.com            localhost:1455/auth/callback URL OK，端口监听
+raccoon      WEBVIEW_CALLBACK   xiaohuanxiong.com          127.0.0.1:51122/callback   URL OK，端口监听
+codebuddy    DEVICE_CODE        copilot.tencent.com        轮询 state                   入口已跑通，授权链接/state 实测取得，轮询返回 Pending
+loomy        SMS_CODE           手机号 + 验证码            sendSmsCode/completeSmsLogin 未执行（需真人手机号）
+custom       NONE               粘贴 baseUrl + key         importAccountJson           免登录
+
+桌面版登录入口已覆盖全部 5 种 AuthKind：浏览器回调、OAuth loopback、设备码轮询、
+短信验证码、粘贴凭证。登录成功后账号直接进内存账号池，无需重启进程。
+
+======================================================================
+六、已验证 / 未验证
+======================================================================
+已跑通  Trae 全链路：网页授权 → 账号落盘 → 2300 额度 → 49 个模型 → 流式 35 chunk「收到」/ 非流式
+已跑通  加密迁移后磁盘零明文、15 项自检、精简 JRE、MSI / zip / app-image 生成、上游 tag 检查
+已跑通  最终发布版 exe：/healthz=ok、额度与模型正常、流式对话返回「收到」+ [DONE]
+已跑通  WorkBuddy 设备码：startDeviceAuth 取得 state 与授权链接，pollDeviceAuth 连续返回 Pending（非 Failed）
+已跑通  KDesign 双主题：两套令牌差异、UIDefaults 跟随、浅色/暗黑窗口实测截图
+未执行  其余 5 家真人授权、WorkBuddy 浏览器授权确认、Loomy 短信登录、MSI 实际安装与卸载
+        真人授权与安装由使用者验证，本包不含任何账号凭证（数据目录由使用者自己生成）
+
+======================================================================
+七、产物与脚本
+======================================================================
+build/release/exe/AI Gateway-0.6.4.exe                  EXE 安装包（per-user，免 UAC）
+build/release/msi/AI Gateway-0.6.4.msi                  标准安装包（同 per-user）
+build/release/AI-Gateway-0.6.4-win-x64.zip              便携版
+build/release/dist/AI Gateway/AI Gateway.exe            app-image 入口
+build/release/runtime/                                  jlink 精简 JRE（47MB）
+build-release.bat                                      一键构建（gradle → jlink → app-image → MSI → zip）
+sync-core.bat -Check / -Ref <tag|branch>                 查上游最新 tag / 替换 core 并备份旧版
+run-desktop.bat                                         开发态无黑窗启动
+trae-login.bat / serve.bat / trae-verify.bat            Trae 登录、网关、端到端验证
+workbuddy-login.bat                                    WorkBuddy 设备码登录（--region global 走国际版）
+
+自检命令：
+  java -cp "desktop\build\install\aigw-desktop\lib\*" dev.aigw.desktop.SelfCheckKt
+  java -cp "desktop\build\install\aigw-desktop\lib\*" dev.aigw.desktop.LoginProbeKt
+
+设计稿重建：
+  cd design && python pencil_run.py design make_ui_kdesign.js
+  cd design && python pencil_run.py shot <浅色根节点> / <暗黑根节点>
+
+======================================================================
+六b、Auto 智能路由（0.5.0 新增，参考 FreeLLMAPI 方案）
+======================================================================
+原理：客户端请求 model="auto"（或 "group/auto"）→ 命中名为 auto 的路由组 →
+首选候选失败（限流/熔断/冷却/换号无效）自动切换组内下一候选（可跨供应商跨模型）。
+调度全部复用 core 路由组 + 供应商/模型级熔断冷却，core 零改动，sync-core 不冲突。
+
+桌面层新增 AutoRouteManager：
+  - 策略三档：均衡（默认）/ 质量优先 / 速度优先，按模型名启发式打分
+    （pro/max/thinking/ultra 为强、flash/mini/lite/turbo 为快、版本号新者先）
+  - 同优先级内跨供应商轮转，避免连续撞同一家；每家最多 8 个候选、全链最多 30 个
+  - 概览页 Auto 卡片：启用/关闭、策略下拉、链路摘要（前 4 个候选+总数）
+  - 账号池变化（登录/登出/禁用）自动后台重建候选链
+  - 偏好持久化：<dataDir>/auto-route.txt（off / 策略名）；路由组本身入加密存储
+响应可见性：流式响应体的 model 字段回填实际路由到的上游模型（比 FreeLLMAPI 的
+X-Routed-Via 头更直接）；概览「最近调用」同样显示实际模型。
+
+已知边界：
+  - 区域型供应商（codebuddy/workbuddy）组成员不带区域约束（上游组路由现状），
+    多区域账号并存时按默认区域选号
+  - 打分是模型名启发式，上游无质量/速度元数据
+
+======================================================================
+六c、安装版 EXE 化与托盘/数据目录修复（0.6.2）
+======================================================================
+EXE 安装包：jpackage 的 exe 类型依赖 Inno Setup 6（msi 走 WiX，exe 走 Inno），
+本机 build\tools\wix314 只有 WiX，故此前只出 msi。已装 Inno Setup 6.7.4，
+build-release.bat 新增 [5/6] EXE 步骤，msi/exe/zip 三产物并列。
+
+安装版账号为空（0.6.1 缺陷）：便携/开发态经 run-desktop.bat 传 --data <项目>\.data，
+账号写死在项目目录；安装版 jpackage 不带 --data，回退 %APPDATA%\AIGateway\data 空库。
+0.6.2 已把 .data（master.key + secure 加密库）整体迁移到 %APPDATA%\AIGateway\data，
+旧空库备份为 data.fresh-backup。安装版与开发态共用同一 Roaming 库。
+
+托盘右键菜单无法关闭（0.6.1 缺陷）：托盘菜单是无 invoker 的 JPopupMenu（为绕开
+JDK21 AWT 原生菜单中文方块 bug 放弃 AWT PopupMenu）。该弹窗是不可激活 tool window，
+系统不发 WM_ACTIVATE → WINDOW_DEACTIVATED 永远不来；点其他应用时事件不进本 JVM
+队列 → AWTEventListener 也收不到。Swing 原生收起机制全部失效。
+0.6.2 三层兜底：① 主窗 windowDeactivated 收起；② 100ms 指针轮询，指针离开菜单
+500ms 收起（MouseInfo 纯 Java，覆盖跨进程点击与托盘-only）；③ AWTEventListener
+处理应用内点击与 ESC。已实测：指针在菜单内保持显示，移出 1s 自动收起。
+
+已知坑：Inno 静默升级（/VERYSILENT）在 app 运行时或特定状态下会挂住不退出，
+本次升级用 app-image 直接覆盖安装目录完成；出包后建议关掉 app 再跑安装器。
+
+======================================================================
+六d、Auto 路由改为纯手动排序（0.6.3）
+======================================================================
+去掉策略打分与「按策略重建」。原实现按模型名启发式打分（pro/max/thinking 为强、
+flash/mini/lite/turbo 为快、版本号新者先）分均衡/质量/速度三档自动排序，用户反馈
+「策略从哪儿来的不可预期」。现在：
+
+- 首次启用 Auto（候选链为空）时按模型目录默认序生成初始链：每家前 8 个、
+  供应商间 round-robin 交错、全链上限 30；之后顺序完全由用户手动维护
+- 「上移/下移/移除/清空」即时写回路由组，重启不覆盖
+- 账号池变化（登录/登出/禁用）只清理失效候选（供应商不可用的成员），
+  不重排、不打上游；启用开关与概览卡只剩开关 + 链路摘要
+- 偏好文件 auto-route.txt 从「off/策略名」简化为「on/off」
+
+窄窗口（Aero Snap 半屏）智能路由页修复：JSplitPane 的 divider 不随窗口变窄
+重算，实测拖到左半屏右栏被挤成窄条乃至消失、表头截断。改为 GridBagLayout
+weightx 确定性分配 + 12px 可拖拽分隔条（拖动调两栏比例，150px 下限），
+表格显式列宽 + AUTO_RESIZE_OFF，视口不够走横向滚动而非压烂表头。
+实测 640px 半屏与 1120px 全屏两栏均正常。
+
+======================================================================
+六e、签到接入 + 模型数修复 + loomy 网络结论（0.6.7）
+======================================================================
+每日自动签到（桌面端接入 core 已有能力）：
+  core 的 AutoCheckin 闸门（一天一次/全部成功才记完成/失败 1h 退避/CAS 防重入）
+  此前只有 Android 端在用。桌面端 init 里起 60s Timer 驱动 engine.autoCheckin.tick()，
+  不该跑时 tick 立即返回零开销。支持签到的账号：Trae、WorkBuddy(codebuddy)、小浣熊
+  （各自 Provider 的 capabilities 自报 CHECKIN；loomy 只有新手任务，无每日签到）。
+账号页新增「一键签到」：选中账号手动执行 ACTION_CHECKIN，成功即回并补刷额度。
+  不支持签到的账号点它会提示，不会误打上游。
+
+概览「模型数」卡修复（此前长期显示「—」）：
+  根因：懒加载目录只在启动后 8 秒预拉一次，撞上慢供应商（如 loomy 域名被墙、
+  连接挂到聚合超时）就扑空，之后没有任何机制再填。
+  修复：① engine 新增 cachedExposedModels()——只读最近一次成功聚合的快照
+  （modelsStreaming 成功即更新 lastGoodCatalog），绝不为此打上游，refreshAll
+  2 秒一拍被动跟随，快照一有值卡片立即显示；② 预拉失败后每 60 秒重试（上限 10
+  次），网络恢复自动补上。
+
+loomy 无法使用的结论（2026-11-12 实测，代码层无解）：
+  loomyad.xunfei.cn 被当前网络整段封锁——系统 DNS 查询超时/污染，解析出的节点
+  （114.118.75.244/245）对出口 IP 直接 RST（TLS 握手即断）；DoH（doh.pub）解析
+  结果相同；同族 imodel.xfinfr.com / api.xfinfr.com 域名解析正常且网关活着
+  （路径一致、鉴权为 Bearer），但对 loomy session 返回 500（session 不互通，
+  新域登录态需重新短信登录）。上游 Android-AI-gateway 与逆向参照 multi2api 的
+  loomy 实现均仍指向 loomyad，说明封锁是区域性的（换网络/热点即可恢复）。
+  处置：loomy 全部代码逐字节还原为上游原样（LoomyHttp 曾试过 DoH 直连与
+  imodel 故障转移两个方案，均因节点黑洞/session 不互通作废，已回滚）。
+  用户换网络（手机热点等）后 loomy 额度/模型/对话即自动恢复，无需改代码。
+
+======================================================================
+六f、签到语义修正（0.6.8）
+======================================================================
+「一键签到」改为**批量全量**：不再「选中谁签谁」，一次点击对全部支持签到的账号
+（Trae / WorkBuddy / 小浣熊）执行。走 core 的 AutoCheckin.tick(force = true)：
+绕过「今天已跑过」与失败退避（用户显式点就是要现在跑），但不绕过防重入；
+上游对已签到的账号回「今日已签到」（成功），不会重复领取，所以强制跑是安全的。
+结果弹窗显示汇总 + 逐账号回执。
+
+「自动签到」改为**每天 10:00 单次批量**，取消 60 秒轮询：
+  - 用一个「算到下一个 10:00 的延时」单发 Timer（armNextDailyCheckin），
+    触发后重排下一天；两次触发之间进程完全不唤醒，零轮询开销
+  - 启动时若不巧错过了 10:00（已过 10 点且当天还没成功签过），立即补跑一次
+  - 「一天只跑一次」的语义仍由 core 的 AutoCheckin 台账保证
+    （全部账号成功才记完成，部分失败留待 1h 退避重试）
+  - 钟点常量 AUTO_CHECKIN_HOUR = 10（本地时区整点），改这一处即可换时间
+
+======================================================================
+六g、概览页重构：移除重复卡片 + 新增数据可视化（0.6.11）
+======================================================================
+移除（配置页已有，概览不重复）：
+  - 「Auto 智能路由」卡片（开关 + 链路摘要）→ 全部归到「配置 → 智能路由」页
+  - 「供应商」卡片（逐家状态行）→ 归到「供应商」页
+  对应代码一并删除（autoCard / toggleAuto / refreshAutoCard / refreshProviderRows /
+  providerRow 及四个相关字段），启动时按目录默认序建 Auto 初始链的逻辑保留。
+
+新增指标卡（2 行 × 3 列，参考上游 Android 端 HomeMetricsWidget 的口径）：
+  账号就绪   usable/total + 备注（全部可用 / 禁用 N 个 / 全部不可用）
+  今日请求   requests + 较昨日涨跌百分比（昨日无数据时显示「无昨日数据可对比」）
+  今日 tokens  totalTokens（K/M 缩写）+ 备注「输入 x · 输出 y」
+  模型数     引擎内存快照条数（沿用 0.6.7 修复，绝不为此打上游）
+  剩余额度   同单位余额合计（金色，附「已同步 N 个账号」）
+  成功率     success/(success+failed)，≥95% 绿、否则橙，附失败次数
+
+新增可视化（纯 Swing 绘制，零外部图库）：
+  实时调度拓扑  TopologyCanvas：左侧「网关 :port」中枢 + 右侧供应商分支，
+                三次贝塞尔扇出连线；线宽/亮度按 weight（有请求时用近 20 次调用占比，
+                无请求时退化为可用账号占比）；有在途请求的分支高亮金色并沿曲线跑光斑
+                （相位随 2s 刷新推进，32s 一圈）；超过 4 家折叠为「+N 其它」
+  上下文容量分布 ContextCapacityBar：按各家**模型数**占比的水平堆叠条 + 双列图例
+                （色点 + 名称 + 数量 + 百分比），空态显示「暂无模型目录」
+  消耗趋势      TrendChart：近 14 天输入（品牌蓝）/ 输出（成功绿）两条折线 + 今日数值标注
+
+布局问题与修法（踩坑记录）：
+  1. GridLayout 的容器 preferred 宽度取「子项 preferred 之和」——3 张指标卡被算成
+     1284px，远超视口 862px，第 3 列直接被横向裁掉。GridLayout 不适用于「按可用宽度
+     等分」的场景。
+  2. GridBagLayout 在本页（KScrollColumn 内多层嵌套）同样没能稳定均分。
+  3. 最终改为自实现 EqualColumnsLayout（LayoutManager 子类）：只按容器的**实际可用
+     宽度**等分 n 列（间距从总宽扣除），永不溢出、任意窗口宽度都严格等宽。
+     实测日志：三列各 279px，x=0 / 291 / 582，总宽 862 = 视口宽。
+
+验证方式（新增调试钩子，仅显式启用时生效）：
+  -Daigw.debug.overview=1  启动后 5 秒把概览页容器树与全部 MetricCard 的
+    bounds/preferred 写进 design/overview-bounds.log，并把页面直接用 printAll
+    渲染成 design/overview-render.png（不依赖屏幕截图，绕开 DPI 缩放与窗口遮挡）。
+  这是验证 Swing 布局的唯一可靠手段：屏幕 BitBlt 在高 DPI / 窗口被遮挡时会给出
+  与实际布局不符的假象（本次排查中被误导了两轮）。
+
+======================================================================
+六·h  0.7.0 —— 交互性能专项（拖动/卡顿/余额）
+
+一、概览布局
+  1. 「消耗趋势」与「最近调用」改为左右并排（与上方「实时调度拓扑 / 上下文容量分布」
+     同一套 EqualColumnsLayout(2) 分配，窄窗口两栏都保底、不裁切）。
+
+二、拖动与缩放（四条独立缺陷）
+  1. 每个 mouseDragged 直接 frame.setLocation → 改为 16ms 帧合并（status: pendingBounds
+     + Timer），一帧最多一次 SetWindowPos。原先一次拖动可在 EDT 上排上百次同步改窗。
+  2. 拖动坐标改用 MouseInfo 真实光标（事件坐标作兜底，差异 >200px 视为不可信）。
+     原实现用 MouseEvent.getXOnScreen，该值 = 窗口位置 + 客户区坐标，窗口一跟手就被
+     补偿，形成「窗口追光标 → 坐标漂移 → 追不上」的反馈环，表现为抖动与「拖两下拖不动」。
+  3. 拖动/缩放期间挂起全部界面刷新（suspendUiRefresh），松手补一帧。
+  4. release 丢失自愈：mouseMoved/mouseDragged 检测到左键已抬起即复位 titleDrag / mode，
+     修掉「拖两次之后整个窗口再也拖不动」的残留状态。
+  5. 位置更新区分「只挪位置」与「改尺寸」：尺寸不变走 setLocation，不复用 setBounds
+     （后者即使尺寸相同也会触发容器重排）。
+
+三、Aero Snap 坐标修正
+  snapEdgeOf / snapToHalf 改用显示器**虚拟桌面绝对坐标**（b.x + ins.left / b.y + ins.top）。
+  原实现按 ins.left 与 0 计算，多显示器（非主屏原点不为 0）时贴边会把窗口吸到主屏，
+  即「贴边时窗口位置乱跳」。
+
+四、界面刷新降负（EDT）
+  1. refreshAll 增加 200ms 节流；动作类操作（刷新额度/拉模型/启停/切页）走 force 跳过，
+     避免动作后的刷新被节流吞掉（这正是「点了刷新额度但数字不变」的一个成因）。
+  2. 表格改 syncModel 差异更新，不再 rowCount=0 + 逐行 addRow（后者每拍触发
+     structureChanged → 列宽重置 + 选中丢失 + 整表重绘）。且只同步当前可见页的表格。
+  3. 「最近调用」按记录签名比对，无变化不重建组件。
+  4. 日志页：不在该页时完全跳过；在页时用「头部 insert + 尾部裁剪」增量更新，窗口固定
+     160 行；顺手修正 takeLast(300) 取到最旧日志的语义错误（requestLog 是 newest-first）。
+  5. 所有定时刷新的标签赋值走 setTextIfChanged / setValue / setForegroundIfChanged，
+     消除「新旧值相同也 firePropertyChange → 重绘」的空赋值风暴。
+  6. KButton 在 paintComponent 内只在颜色变化时 setForeground（原先每帧无条件赋值，
+     等于在绘制期间请求重绘）。补禁用态视觉（弱底色 + 弱文字）。
+  7. 托盘菜单的指针轮询 Timer 从常驻 10Hz 改为「菜单显示时才跑」。
+
+五、刷新额度
+  1. 去掉失败时的模态弹窗（showKMessage 是模态 SunAwtDialog，会把 EDT 整体阻塞——
+     这是「点刷新额度界面就卡死」的直接原因）。改为按钮就地回显
+     「刷新中 x/y」→「已刷新 N 个账号，M 个失败」。
+  2. 并发度 3 → 2 降低上游风控命中；按钮在刷新期间置灰禁用，防连点叠请求。
+  3. 账号表余额列拿不到值时带原因（凭证失效 / Connection reset / 上游无解析额度 /
+     未同步），不再是一个无从判断的「—」。
+
+实测（安装版 0.7.0）：全量额度刷新 11 账号 ≈4.8s（并行 2）；trae 3 账号中 1 个 2400 正常、
+1 个凭证失效、1 个上游无可解析额度；codebuddy 3 个、raccoon 3 个均正常；loomy 2 个
+Connection reset（域名被当前网络整段封锁，与代码无关）。空闲 CPU 由约 4% 降至 3% 左右，
+日志页/表格/悬停路径的无效重绘已移除。
+
+
+======================================================================
+六e、同步上游 v2.37.1 + 概览模型数卡收尾（0.6.4）
+======================================================================
+core 从「main @ v2.32.0 快照」同步到「main @ v2.37.1」，备份 core-backup-20261112-000422。
+差异：新增 2 个测试、改动 5 个主源码 + 2 个测试。
+
+上游带来的实质修复（全部已在本机复验）：
+1. 能力标记两种口径兼容（OpenAiApi.kt）
+   目录写入方口径不一：Trae/Loomy 写 "1"，WorkBuddy 写 "true"。旧代码只认 "1"，
+   于是 WorkBuddy 的模型在 /v1/models 里能力全为 false，客户端根本不发 tools。
+   实测：修复前 supports_tools 计数为 0，修复后 85 个模型里 16 个正确标记
+   tools / vision / reasoning。
+2. Trae 工具调用终止原因（TraeSse.kt / TraeProvider.kt）
+   带 tools 的请求原先 finish_reason 不是 tool_calls。实测 glm-5.3-flash：
+   非流式 finish_reason=tool_calls + tool_calls[{name:get_weather, arguments:{"city":"北京"}}]；
+   流式 2 个 tool_call delta、参数完整拼接、[DONE] 正常。
+3. Trae 登录区域判定（TraeProvider.kt）
+   登录时选的区域（region）随 pending 落盘，回调优先取它，不再靠回调参数猜。
+   国际版账号此前可能被换 token 的请求打到 api.trae.com.cn 而必然失败。
+4. 自定义供应商 baseUrl 规范化（CustomProvider.kt）
+   用户贴 https://api.x.com 会被拼成 /chat/completions 缺 /v1 必 404；
+   现在去掉端点尾巴、末尾无版本段则补 /v1，且 fetchModels 改为返回
+   ModelFetchResult（带错误原因：401/404/网络不通不再一律压成空列表）。
+   CustomProviderConfig 去掉 enabled 字段（启停由账号池承载），新增
+   normalizeKey / deriveKey 供表单生成短名。
+上游新增单测 20 项全通过（CustomProviderBaseUrlTest / TraeFinishReasonTest / TraeRegionTest）。
+
+桌面层改动：
+- 概览「模型数」卡收尾（0.4.0 起的遗留）：启动后 8 秒后台静默预拉一次，
+  用 exposedModels() 与 /v1/models 同口径（含路由组投影）。
+  实测：修复前卡片固定显示「—」，修复后显示 85，与 GET /v1/models 完全一致。
+  延迟 8 秒是因为网关刚 start 时供应商目录未就绪，立刻拉会少数一两个（84 vs 85）。
+- 手动「拉取模型目录」也改成同口径计数（表格仍只列真实供应商模型）。
+
+验证：SelfCheck 15 项 ALL PASS；/healthz=ok；/v1/credits 账号数与额度正常；
+/v1/models 85 条；model="auto" 流式 8 chunk「收到」+[DONE]，实际路由 qwen3.8-max。
+产物：exe 37.9MB / msi 37.4MB / zip 36.2MB，安装目录已覆盖为 0.6.4 并在运行。
+
+======================================================================
+七、许可
+======================================================================
+licenses/LICENSE.txt              上游 MIT + 附加使用声明
+licenses/THIRD-PARTY-NOTICES.md  上游第三方来源汇总
+MSI 安装流程会展示 LICENSE.txt；app-image 与 zip 内也附带 licenses/ 目录。
+上游附加声明包含「仅供个人学习与研究使用」「禁止商业用途、二次分发牟利、批量账号运营」，
+并说明复用登录态可能不符合上游服务条款。发布形态（只发源码 / 取得上游作者授权）由使用者决定。
+
+======================================================================
+六·i  0.8.0 —— WebView2 版壳（彻底替换 Swing 界面）
+
+一、为什么要换
+  旧版是「Swing 自绘无边框窗口」：整窗覆一个 glassPane 截获所有鼠标事件，
+  自己做命中测试、自己合成 ENTERED/EXITED/CLICKED、自己算拖动坐标、
+  自己调 SetWindowPos。这套设计带来四层代价，前面几轮只修掉了其中三层：
+    1) 每个鼠标移动都要遍历组件树做命中测试（窗口大、DPI 高时尤其贵）
+    2) 拖动时每帧同步改窗 + 整窗重排
+    3) 定时刷新与鼠标事件同抢 EDT
+    4) Windows 原生行为（Aero Snap / 贴边 / 高 DPI 字体缩放）全部缺失，只能自己仿
+  0.7.0 把 1~3 修了，但第 4 层是架构性的：只要自己画窗口，就永远在跟系统对着干。
+  WebView2 版把「窗口」和「界面」两件事分别交还给 Windows 与 Chromium，这四层全部消失。
+
+二、新架构（三模块）
+  :core    不变。同一份 Kotlin 网关引擎，与 Android 端共用。
+  :desktop 保留（旧 Swing 壳仍可用，作为回退；数据格式完全一致）。
+  :server  新增。复用 core + desktop 的加密存储与 AutoRouteManager，
+           对外提供 /ui/… 管理 API 与静态前端。**端口 8792，与网关 8790 分开**，
+           客户端接入地址不受换壳影响。
+  shell/   C# WebView2 外壳（AiGatewayWeb.exe）。只做三件事：
+           拉起后端子进程、开窗口、把窗口按钮点击转成原生操作。
+
+三、窗口交互（这一版花了最多时间，结论值得记下来）
+
+  **唯一可行架构：标题栏必须是 Form 的子控件，不能是 HTML。**
+  原因：WebView2 的子窗口铺满它自己的边界，凡是它覆盖到的像素，鼠标消息全部进
+  Chromium 进程，**父窗口的 WM_NCHITTEST 永远不会被调用**。换句话说，
+  只要标题栏画在 HTML 里，无论 NCHITTEST 怎么写、CSS 怎么设 app-region，
+  拖动都不可能生效。（本版前三次尝试分别栽在 NCHITTEST、CSS app-region、
+  IsNonClientRegionSupportEnabled，全是这一个根因。）
+
+  最终布局：
+    Form.Padding = 8                → 四周 8px 环是 Form 自己的客户区 ⇒ 边缘缩放生效
+    TitleBarPanel (Dock=Top, 63px)  → Form 的普通子控件 ⇒ 鼠标消息进 Form 的消息循环
+    WebView2 (Dock=Fill)            → 只占下面那块，不再吃掉标题栏像素
+
+  三处关键实现：
+  1) Dock 顺序必须「先加 Fill、后加 Top」。WinForms 的 Dock 布局从 Controls 末尾
+     向前处理；反了 Fill 会先占满客户区，Top 布局时就已无空间，标题栏高度变 0
+     （表现：标题栏看不见、点不到、拖不动）。实测日志确认了这一点。
+  2) WM_NCHITTEST（`ShellWindow.DecideHit`）：
+       边缘 8px（DPI ×1.5 折算）→ HTLEFT/HTRIGHT/…，四角优先
+       标题栏带且不在按钮矩形内 → **HTCAPTION** ⇒ DefWindowProc 进入系统模态移动循环
+       窗口按钮矩形内 → HTCLIENT（交给 TitleBarPanel 自己处理）
+     坐标取自 **lParam**，不是 Cursor.Position：系统在贴边吸附/DPI 切换/键盘触发时
+     也会发本消息，那时真实光标与待测点无关。
+  3) TitleBarPanel.OnMouseDown 里再显式 `ReleaseCapture()` +
+     `WM_NCLBUTTONDOWN(HTCAPTION)` 作为主路径；同时在 OnMouseMove 里留了一条
+     「系统循环未接管就自己挪窗口」的兜底（远程桌面等环境用得上）。
+
+  判定表抽成纯函数并配 `--selftest`，**12/12 通过**（含标题栏 HTCAPTION、
+  按钮区 HTCLIENT、四边四角、最大化态底边不误触发）。
+
+  **验证边界（必须说清）**：本机这台测试环境没有交互式桌面
+  （`GetForegroundWindow()=0`、光标坐标恒为 0,0），Robot 与任何真实鼠标注入
+  都不产生事件，`WindowFromPoint` 仍能命中窗口但消息不会走正常路由。
+  因此「拖动是否真的跟手」这一项**只能在你的真实桌面上验证**，我这边只验证到
+  判定表正确 + 布局正确（日志：titlebar bounds={X=8,Y=8,W=1224,H=42}、
+  webview bounds={X=8,Y=50,W=1224,H=762}）。
+
+四、前端
+  纯 HTML + CSS + 手写 JS，无构建步骤、无第三方依赖（离线可用）。
+  颜色全部走既有 kd-design-system.css 的令牌，深浅主题只切 data-kd-theme。
+  九个页面全部实现：概览 / 运行日志 / 供应商 / 账号 / 模型目录 /
+  智能路由 / 网关设置 / 客户端密钥 / 调用记录。
+  概览四张卡两两并排：实时拓扑（贝塞尔扇出 + 在途光斑）、上下文容量分布、
+  消耗趋势（近 14 天双折线）、最近调用。
+
+  布局坑（两次都是同一类问题）
+  - `GridLayout` / `auto-fit minmax(300px)` 在小屏退化：本机 150% 缩放，
+    1280×800 物理屏的逻辑工作区只有 853×533，内容区仅 ~543 CSS px，
+    300×2+12=612 放不下 → 自动变单列。下限改 240px 并用 `min(240px, 100%)`。
+  - grid item 的 automatic minimum size = min-content，而 canvas 的 min-content
+    等于它的 width 属性（上千像素），一列就被撑满。`.split2 > * { min-width:0;
+    overflow:hidden }` 才能真并排。
+  - `hidden` 属性被 `display:grid` 覆盖（前者只是低优先级样式），
+    弹窗遮罩会一直显示。必须补 `.modal-mask[hidden]{display:none}`。
+
+五、数据与迁移
+  发布版与旧版共用 `%APPDATA%\AIGateway\data`：账号、额度、路由组、调用记录、
+  master.key 全部沿用，**换壳不需要重新登录任何供应商**。
+  验证：发布版起来后 /ui/state 返回 11 个账号、额度 31968、模型 85 个。
+
+六、构建
+  build-web.ps1 产出 build\release-web\（约 51 MB）：
+    AI Gateway.exe                     启动器（WebView2 外壳）
+    Microsoft.Web.WebView2.*.dll       **必须与 exe 同目录**（程序集解析只看应用目录）
+    WebView2Loader.dll                 同上（托管包装按相对路径加载它）
+    runtime\                           裁剪后的 JRE（保留 java.desktop，签到调度用 Swing Timer）
+    app\                               后端 jar（core/desktop/server + 依赖）
+    web\                               前端静态文件
+  脚本用 PowerShell 而不是 .bat：安装路径含空格（"AI Gateway"），
+  cmd 的 xcopy/copy 在这种路径下会静默把参数拆成两个。
+  另：`.bat` 必须保持纯 ASCII —— cmd 按 OEM 代码页读 .bat，
+  UTF-8 中文注释会被拆成非法命令（本项目已踩两次）。
+
+七、已知限制
+  - WebView2 Runtime 需存在（Win10/11 通常自带；缺失时外壳会弹提示，
+    可从微软官网装 Evergreen Runtime）。
+  - 旧 Swing 版未删除，仍是可回退的入口；两者共用数据目录，
+    不要同时运行（单实例锁端口 8791 会挡住第二个）。
+
+======================================================================
+六·j  0.8.1 —— 标题栏拖动修复（本轮唯一改动）
+
+问题：0.8.0 装上去后「窗口无法移动」。
+
+根因（一句话）：**WebView2 的子窗口铺满它自己的边界，凡是被它覆盖的像素，
+鼠标消息全部进 Chromium 进程，父窗口（Form）的 WM_NCHITTEST 永远不会被调用。**
+所以只要标题栏画在 HTML 里，拖动就永远不可能生效——与 NCHITTEST 写得对不对无关。
+
+三次失败尝试与各自的真实死因：
+  1) WM_NCHITTEST 查表 + HTML CSS app-region：NCHITTEST 收不到消息（被子窗口吃掉）
+  2) CSS app-region + IsNonClientRegionSupportEnabled=true：CSS 侧确实算出 drag，
+     但窗口不动（该开关在当前 WebView2 Runtime 未接管拖动，且它同样要求
+     app-region 区域不在子窗口的滚动内容里）
+  3) JS 按下 → postMessage → C# 里 ReleaseCapture + WM_NCLBUTTONDOWN：
+     消息链打通了（日志可见），但 HTML 标题栏仍在顶部占 42px，
+     点击落点被 HTML 元素吃掉，C# 标题栏被压在下面收不到事件
+
+最终方案（结构与代码都改）：
+  · **删掉 HTML 的 <header class="titlebar">**（index.html / app.css / app.js 全部清掉）
+  · 标题栏改为 C# 的 TitleBarPanel（Dock=Top，63px @150%），它是 Form 的普通子控件，
+    鼠标消息直接进 Form 的消息循环
+  · WebView2 用 Dock=Fill 只占下面那块，顶部那 63px 不再被它覆盖
+  · Form.Padding=8：四周 8px 环仍由 Form 负责 ⇒ 边缘缩放在 WebView2 之外也能用
+  · WM_NCHITTEST：边缘→HTLEFT/…、标题栏空白区→**HTCAPTION**（系统模态移动循环）、
+    按钮区→HTCLIENT（交 TitleBarPanel 自己处理）
+
+  修改文件：shell/TitleBar.cs（新增，376 行：自绘标题栏 + 四个按钮 + 拖动发起）、
+           shell/Program.cs（布局改 Dock 结构 + TitleBarPixelHeight/ButtonLeftPixel）、
+           web/dist/index.html（删 header）、web/dist/app.css（删 .titlebar 规则）、
+           web/dist/app.js（删窗口按钮绑定，主题切换改由 C# 调 window.aigwToggleTheme）
+
+另外修掉的两个通用缺陷（影响所有调试/打包，不只拖动）：
+  · 命令行参数循环上界写成 `args.Length - 1`，会漏掉最后一个参数 ——
+    `--dragtest` 这类「无值开关」永远解析不到（表现为「钩子加了但日志没动静」）
+  · WinForms 的 Dock 布局从 Controls 末尾向前处理，必须「先加 Fill、后加 Top」。
+    反了 Fill 先占满客户区，Top 布局时已无空间，标题栏高度变 0（看不见点不到）。
+    实测日志 `[layout] titlebar bounds` 已确认正确值 = {X=8,Y=8,W=1224,H=42}
+
+验证：
+  · `--selftest` 判定表 **12/12 PASS**（四边四角缩放、标题栏 HTCAPTION、按钮区 HTCLIENT、
+    内容区 HTCLIENT、最大化态底边不误触发）
+  · 布局日志：titlebar bounds={X=8,Y=8,Width=1224,Height=42}、webview bounds={X=8,Y=50,...}
+  · 九页全渲染、无 JS 错误；发布版端到端拉起后端，返回 11 账号 / 31968 额度 / 85 模型
+  · **真实拖动未能在本机验证**：这台测试环境没有交互式桌面
+    （GetForegroundWindow()=0、光标恒为 0,0），Robot 与任何鼠标注入都不产生事件。
+    需要在你的真实桌面点一下验证；若仍不可拖，<dataDir>\shell-launcher.log 会记录
+    `[titlebar] MouseDown` 与 `[drag] BeginNativeDrag called`，
+    两者都出现仍不移动 ⇒ 系统循环未接管（可改用兜底路径，见代码注释）。
+
+产物：build\release-web\（52 MB）。旧 Swing 版 path 保留可回退。
+
+======================================================================
+六·k  0.9.0 —— 把 core 的「策略与媒体」能力接进界面
+======================================================================
+
+## 一、这轮在补什么
+
+`MEMORY.md` 里的长期待办是「上游 core 能力在桌面 UI 尚未暴露」。逐项核对后，
+真正「core 已完整实现、界面零入口」的有两组：
+
+  1. 账号选择策略 + 故障转移参数 + 并发闸门 + 模型级冷却 + 会话亲和
+     core 里 5 种 AccountStrategy（SMART / ORDER / ROTATE / USAGE / PACE）、
+     重试退避、两级熔断、并发上限、模型冷却全部可配置，但只能手改
+     secure/settings/failover.json 才生效——界面上连一个开关都没有。
+  2. 媒体端点 POST /v1/images/generations、/v1/audio/transcriptions
+     core 早已实现（含选号/换号/CLIENT 错误直返/调用记录），界面侧完全没有入口，
+     等于要验证一次出图必须自己写 curl。
+
+本轮新增两个页面把这 11 项全部接上。
+
+## 二、高级策略页（/ui/strategy）
+
+新增端点：
+  GET  /ui/strategy        读快照（failover + 亲和条数 + 熔断现状 + 冷却现状）
+  POST /ui/strategy/save   写回（只覆盖显式给出的字段）
+  POST /ui/affinity/clear  清空会话亲和表
+  POST /ui/cooling/clear   解除全部模型级冷却
+
+界面分三张卡：
+  账号选择策略   策略下拉（5 档，每档带「什么时候该用」的一句话）+ 报错账号冷却毫秒 + 故障转移总开关
+  故障转移参数   重试 5 项、熔断 3 项、并发 3 项、模型冷却 2 项，共 13 个数值输入
+  运行现状       会话亲和条数 + 熔断中的供应商 + 冷却中的模型（各带一键清除）
+
+范围校验与 core 完全一致：策略名走 `AccountStrategy.valueOf`，未知值直接
+返回 `{ok:false,message:"未知账号策略：X"}` 而不是静默落回 SMART；
+数值裁剪复用 `ConcurrencyConfig.clampMaxPerAccount / clampMaxGlobal /
+clampQueueTimeoutMs`，其余按 core 的 fromJson 上下界裁剪。
+
+**两个刻意的设计决定**
+  · `routes`（模型级故障转移映射）不随快照下发，保存时从当前配置原样带过去。
+    它可能几百条，2 秒一拍白传；且它不出现在界面上，一保存就清空是事故。
+  · 「运行现状」单独抽成 paintStrategyStatus()，只重画那一块。
+    整页每 2 秒重画会把用户正在输入的数值打回原值——旧 Swing 版栽过同类问题，
+    这版不让它重演（loadState 里用 activeElement 判 INPUT/TEXTAREA 跳过重建）。
+
+## 三、媒体实测页（/ui/media）
+
+新增端点：
+  POST /ui/media/image       出图
+  POST /ui/media/transcribe  转写
+
+**不走第二套实现**：两个端点都是把请求重建后转发到本机网关
+`POST /v1/images/generations` / `/v1/audio/transcriptions`，于是选号、换号、
+冷却、熔断、CLIENT 错误直返、调用记录全部与客户端实际路径完全一致。
+界面上看到的结果就是客户端会拿到的结果，不会出现「界面能出图、客户端报错」。
+
+  · 出图：网关只给 base64（上游不给外链），后端把它转成 data URL 直接喂 <img>，
+    省一次二次请求。响应里的 dataUrl / bytes / elapsedMs 都是实测值。
+  · 转写：WebView2 拿不到真实文件路径，前端 FileReader 读成 base64 上传，
+    后端重建 multipart（含 Content-Type 与 boundary）再转发。
+    这条路在上游真实跑通了：用一段 16kHz/2s 的合成 WAV 打 loomy，
+    返回「该账号的模型目录里没有声明音频输入的模型，无法用对话通道转写」——
+    是上游原话，不是占位文本，证明 multipart 重建与鉴权链路正确。
+  · 能力提示：页面上直接写「图像供应商：无（会返回 400）」/「转写供应商：Loomy」，
+    数据来自快照里新增的 providers[].image / providers[].audio 两个布尔字段
+    （由 `Provider.supportsImageGeneration / supportsAudioTranscription` 直接读，
+    不从 capabilities 字符串里二次解析，避免枚举改名后静默失效）。
+
+## 四、验证（全部实测，无 mock）
+
+  · `:server:compileKotlin` 通过；`build-web.ps1` 出 51.4 MB 包。
+  · 策略保存往返：写 PACE / 4 次重试 / 250→2500 退避 / 单账号 2 / 全局 12 /
+    冷却 300s，返回体逐字段一致；重启进程后再读仍是同一组值（落盘生效）。
+  · 错误路径：`accountStrategy="BOGUS"` → `{ok:false,"未知账号策略：BOGUS"}`，且不写坏配置。
+  · 快照变化：端到端 `model="auto"` 流式 chat 前亲和表 0 条，chat 成功后变 1 条
+    （证明亲和绑定真的发生在真实调用里），点清空后回 0。
+  · 图像端点：无可用图像供应商时返回 `{ok:false,"没有支持图片生成的供应商可用…",elapsedMs:8}`。
+  · 转写端点：空 body → `缺少文件内容`；真实 WAV → 上游真实拒绝原因（见上）。
+  · 外壳命中判定自测 **12/12 PASS**（改动未碰窗口层，回归确认）。
+  · 全 11 页渲染巡检（go(page) + 数卡片/节点）：strategy 首次停在「加载中」是
+    真 bug——快照靠 `loadState` 的分支拉取，首次进页面时还没值。
+    改为启动时预取 `loadStrategy()`，复查后 strategy=3 卡/95 节点正常。
+
+## 五、已知限制
+
+  · 图像端点在这台机器上无法出真图：6 家里只有 antigravity 声明图像能力，
+    而它 0 个账号。要真出图得先登一个 antigravity 账号——界面已把这个状态
+    直接写在页面上，不会再让人点一次才看到 400。
+  · 转写同理：只有自定义供应商声明该能力，内置 6 家全不支持；loomy 虽标
+    aud=True 但上游明确回「模型目录里没有音频输入的模型」。
+    也就是说这条路径**当前在这台机器上不可用**，端点与错误传播是正确的，
+    缺的是有该能力的上游账号。
+  · 策略页每 2 秒会重新读一次快照；只在输入框失焦时才重画「运行现状」，
+    数值输入框本身永不自动重建。
+
+产物：build\release-web\（51.4 MB）。APP_VERSION 0.8.0 → 0.9.0。
+
+==============================================================================
+六·l  0.9.1 —— 空状态与表格溢出（纯前端 + 巡检工具）
+==============================================================================
+
+本轮没有新功能，全部是「数据为空 / 列太挤」这两类真实可用性问题，
+外加把上一轮卡死的巡检工具修好。
+
+一、首次安装的空状态（原来最劝退的地方）
+  新装数据目录下概览是 6 个 0 + 两块空画布，既不解释为什么空，也不告诉人
+  去哪。新增「还没有可用账号，按这三步就能跑通」引导条：登录供应商 →
+  拉模型目录 → 配置接入，每步带一个直接跳转的按钮；池内一有账号自动消失。
+  布局走行式（不是三列卡片）：内容区实测只有 ~543 CSS px，三列会把每列压到
+  ~160px，标题与说明必然折行，整条还高到把拓扑卡推出首屏。
+
+二、空态的归因文案（同一句被用了三种情况）
+  · 「模型数」卡：0 个模型原来一律写「尚未拉取目录」。但目录拉过、上游返回
+    空的时候也这么写，用户会以为点一下刷新就出东西。现在分三种：池内无账号
+    → 「先登录供应商」；正在拉 → 「拉取中…」；其余 → 「尚未拉取目录」。
+  · 智能路由候选链：原来写「点右下角模型池里的『加入』」，但模型池未拉取时
+    那里只有一个按钮，照做找不到「加入」。按池的真实状态分两句。
+  · 模型池未拉取时直接说明「池内没有账号，拉取只会返回空目录」。
+
+三、三张画布卡的空态统一
+  拓扑卡的空态是画布上 fillText 近似居中，容量卡的空态直接画在左上角
+  (4,22)，两张并排明显不是一套东西。全部改成 DOM 空态（与账号/模型/密钥页
+  同款 .empty），标题 + 说明两行、固定 170px 高、「最近调用」卡也补齐说明，
+  四张卡的空态现在在同一基线。
+
+四、消耗趋势的全零误判
+  后端固定返回 14 个 0，所以原来 `n === 0` 的空态分支永远不成立：结果是满屏
+  0 数据却画出 0–1 坐标轴和一条贴地线，看着像「有数据但全是 0」。改为按
+  求和判空，全零直接走空态。
+
+五、表格横向溢出（三个页面都中招）
+  实测内容区 602 CSS px：
+  · 账号页 6 列 auto 布局 651px，「说明」列按上游原话撑到 196px，把最右侧
+    「操作」列（唯一交互列）推出可视区，截图里只剩「停」和半个箭头。
+  · 调用记录 8 列 722px，溢出 129px，右边「耗时」「尝试」两列看不到。
+  · 智能路由双栏每栏仅 299px，单行放下 序号18+tag66+按钮62 后模型名只剩
+    115px，真实模型名（sn-deepseek-v4.1-flash-1017）必然截成「…-fla」。
+  修法分别是：账号/调用记录改 table-layout:fixed + 显式列宽（调用记录再叠
+  compact 5px 内边距，8 列挤 602px 时默认 10px 左右内边距要吃掉 160px）；
+  智能路由候选链与模型池改两行布局，模型名独占整行，并给 title 看全文。
+  .table-wrap 的 overflow-x 从 hidden 改 auto（原来横向裁掉不给滚动）。
+
+六、巡检工具的真 bug
+  --screenshot 跑完不退出：外壳正常路径是 Application.Run 消息循环，不关窗
+  就不返回。批量巡检时 11 页只出第 1 张，进程还会累积。新增 --quit 开关，
+  截图写盘后直接 Environment.Exit(0)；带它之后 11 页巡检一次跑完。
+
+验证（全部为真实数据实测，非 mock）
+  · 空状态：空目录实例逐页截 11 页，逐项核对文案与对齐。
+  · 真实数据：临时目录副本 11 账号，真实 chat 一次（返回「链路正常」），
+    趋势曲线、最近调用、拓扑、容量分布全部正常，引导条按预期不出现。
+  · 外壳 --selftest 12/12 PASS。
+  · 11 页横向越界扫描：全部 `no horizontal overflow`（pageBody scrollW==clientW）。
+
+产物：build\release-web\（51.6 MB）。APP_VERSION 0.9.0 → 0.9.1。
+
+
+
+==============================================================================
+六·m  0.9.2 —— 多实例隔离（数据目录 + 锁 + 端口派生）
+==============================================================================
+
+上一轮遗留的「Swing 版与 WebView2 版共用数据目录，不可同时运行」只是表面现象。
+真正的限制在**实例身份定义**上：旧实现把「一个实例」绑在三个固定端口上——
+8791（单实例锁）、8792（管理面）、8790（网关）。于是任何「换数据目录跑第二个
+实例」的尝试都在第一步就死掉，哪怕两份数据完全不共享。
+
+实际代价是每次验证都得先杀掉正式实例、验证完再拉回来；两个目录的数据本来
+互不可见，进程却互相排斥。这一轮把它拆开。
+
+一、锁改成「数据目录下的文件锁」
+  · 旧：`ServerSocket(8791)`，进程级、与目录无关 → 第二个实例必被拒。
+  · 新：`<dataDir>/.instance.lock` 上的 `FileLock`。同一目录第二个进程仍被拒
+    （这是必须保留的，两个进程写同一份加密存储会坏数据），不同目录互不影响。
+  · 默认数据目录额外保留 8791 的监听：Swing 版还在仓库里、随时可能回退运行，
+    它只认那个端口、不认识文件锁。只有默认目录两边都会用到，所以只在那里占住。
+  · 锁句柄全程持有，进程退出（含崩溃）由系统释放；另注册 shutdownHook 显式释放，
+    避免「上次没退干净，下次打不开」。
+
+二、端口按目录派生，写回文件给外壳
+  · 默认目录：UI 8792、网关 8790 —— 老用户升级后行为**零变化**。
+  · 派生目录：从路径的 SHA-256 落到 18100+seed×2，UI 与网关各占相邻一个号；
+    真被占用时依次往后探到空位（实测 A→18164/18165、B→18128/18129）。
+  · 结果写进 `<dataDir>/.instance.json`（Properties；先写 .tmp 再原子替换）。
+    外壳是独立进程，这是两边唯一都能可靠读到的通道。
+  · 开关 `--port` 仍可显式覆盖 UI 端口，写文件时会写**实际监听值**而不是派生值
+    （这一点最初写错了：`--port 18501` 时文件里仍是 18164，外壳必然连错）。
+
+三、外壳不再硬编码 8792
+  · 启动顺序：`--port` > `.instance.json` > 默认 8792。
+  · **存活判定必须带数据目录**（`IsUiAliveFor`）：原来只看「8792 上有没有 HTTP」，
+    第二个实例会把主实例的后端误认成自己的，于是不启动自己的后端、窗口连到
+    别人家的数据上。这是本轮最隐蔽的一处，只有真正并行启动才会暴露。
+  · 端口文件可能是上一轮残留：拉起后端前先删，再按新写出的文件跟。
+  · 等待循环每轮重读端口文件——后端算出的端口可能和上次不同。
+
+四、侧栏两处真实的布局缺陷（顺路修掉）
+  · `renderStatus()` 在 `#statusPill` 上**第一行就抛 TypeError**：侧栏换成 WebView2
+    时这个节点被删了，但代码还在更新它。异常落在心跳的 try 里，看不出来，
+    后果是它后面所有更新——状态灯、接入地址、派生标记——**从来没有执行过**。
+    接入地址一直停在「—」的原因就是这个，跟本轮改动无关，是旧 bug。
+    修法：所有节点访问走判空（`setIf`），缺失的装饰节点不阻断关键更新。
+  · 侧栏单列滚动把底部推出可视区：实测内容 593px / 可视 508px，
+    「客户端接入地址」排在 585px 处，**不滚根本看不到**。
+    拆成「导航区滚动 + 底部固定」，并把导航项内边距 8→5px、分组间距收紧，
+    11 项全部落在 435px 内、无需滚动。
+  · 地址本身 161px 宽而可用只有 143px：省略号正好切掉端口——而端口是派生实例
+    唯一有用的信息。改两行显示（host:port 换行到 /v1），不再截断。
+
+五、界面标明实例身份
+  · 快照新增 `derived` / `uiPort`。
+  · 派生实例侧栏底部显示橙色「派生实例 · <目录名>」，tooltip 带完整路径与两个端口。
+    默认目录不显示——单实例用户不该看到多一行噪音。
+
+验证（全部真实进程，非 mock）
+  · 同一目录二次启动 → 被拒（「数据目录已被另一个实例占用」）。
+  · **主实例 8792 全程不杀**，并行拉起派生目录实例：两份进程、两套端口、
+    两份数据各自独立（A 11 账号/85 模型、B 0 账号），互不干扰。
+  · 派生实例真实 chat 返回「isolated」；空目录实例正确回 `no_healthy_account`。
+  · 调用记录不串：派生实例自己的记录（含本轮那次 76 token 调用）不污染主实例。
+  · 0.9.2 主实例 derived=false / uiPort=8792 / gw=8790；
+    派生实例 derived=true / 18164 / 18165，侧栏标记与地址均正确。
+  · 外壳 `--selftest` 12/12 PASS；11 页逐页截图全部正常。
+
+产物：build\release-web\（51.4 MB）。APP_VERSION 0.9.1 → 0.9.2。
+
+======================================================================
+十三、0.9.3：全流程实测 + 代码规范化（本轮）
+======================================================================
+
+这一轮做的是「把整个程序自己走一遍，再把写随意的部分整理干净」。
+所有结论都来自真实进程：真后端 + 真 Chromium（headless CDP）+ 真壳（WebView2）。
+
+一、全端点数了 57 个请求（.tmp/uitest/api_probe.py）
+  · 覆盖全部 31 个端点，含读接口、写接口、参数缺失、非法参数、不存在的资源、
+    GET 打写接口、畸形 JSON、超大请求体。
+  · 结果：**0 个 500**。参数错误一律 400、未知接口 404、超大请求 413。
+
+二、11 个页面逐页点完每一个按钮（.tmp/uitest/ui_walk.js）
+  真 Chromium 打开页面，按「页头动作 → 卡片按钮 → 开关 → 日志过滤 → 表格行」
+  顺序逐个 click，每个按钮后判断弹窗/Toast，再关掉弹窗继续下一个。
+  · 概览 4、运行日志 7(tab)、供应商 7、账号 46、模型目录 1、智能路由 94、
+    网关设置 7+5 开关、客户端密钥 1、调用记录 1、高级策略 3+1 开关、媒体实测 2。
+  · 最终：**运行时异常 0、console.error 0、横向溢出 0**。
+  · 空数据目录（全新安装）同样跑一遍：11 页全通，首次引导三步条正常出现。
+
+三、压力与边界（.tmp/uitest/stress.py）
+  · keep-alive 复用同一连接 60 轮 × 5 个请求（模拟连刷页面）→ 全部 200。
+    这一条专门盯「偶发 400 BAD REQUEST」：原因是静态资源走 chunked，
+    连接复用时残留字节被下一个请求当成新的请求行。改成固定长度后消失。
+  · 10 线程 × 20 次并发写 → 200 次全部成功、状态一致（写操作串行锁生效）。
+  · 41 MB 请求体 → 413 且服务存活；畸形 JSON / Content-Length 不符 / PUT / 路径穿越
+    → 分别 200(ok:false) / 400 / 400 / 404，服务均不崩。
+
+四、真实壳端到端
+  · 发布目录启动 `AI Gateway.exe` → 自动拉 javaw → `/ui/state` 200。
+  · 布局日志：`titlebar={8,8,1224,42}`、`webview={8,50,1224,762}`，标题栏可点可拖。
+  · `--selftest`：命中判定 12/12 PASS（含最大化态底边不缩放、按钮区不拖窗）。
+
+五、修掉的真问题（不是重构，是 bug）
+
+  1. **主界面卡的根因找到了：模型数每 2 秒打一次全供应商上游。**
+     心跳调 `/ui/state` → `cachedExposedModels()`。这个名字像纯读缓存，
+     实际内部走 `modelsStreaming{}`，会给每个供应商提交一次拉取任务再聚合：
+     实测单次 300–350ms，冷启动第一次 2.4 秒。
+     心跳 2 秒一拍 = 每两秒一次全供应商聚合，EDT/页面线程全被拖住——
+     这就是「拖动卡、点一下要等」的真正来源，不是渲染。
+     修法：管理面自己维护一份模型数快照，后台线程按节奏刷新
+     （有内容 5 分钟一次；刚启动 10 秒一次最多 5 次；确认没目录后退到 20 分钟），
+     心跳只读字段。实测 `/ui/state` 从 340ms 降到 **9ms**。
+     顺带修正口径：路由组投影（`group/auto`）不再算进「模型数」——
+     否则「一个模型都没拉」会显示成「1 个」，用户会去模型页找一个不存在的模型。
+
+  2. **写端点不再接受 GET。**
+     原来对方法一视同仁，于是 `GET /ui/account/delete?providerId=x&uid=y`
+     真能删账号——浏览器里任意页面都能构造这个 GET（CSRF 面）。
+     现在写端点一律只认 POST，其余 400 并说明原因。
+
+  3. **签到定时器从 `javax.swing.Timer` 换成 `ScheduledExecutorService`。**
+     服务端进程没有 Swing 事件循环，原来那版是靠 Timer 的守护线程勉强跑起来的，
+     打包时还得额外保留 java.desktop 模块。纯 Java 定时器不依赖 EDT。
+
+  4. **答复 500 的三处去掉。** 未知供应商、请求体读超时、body 读异常——
+     原来都落进兜底 catch 变成 500，浏览器控制台一条红字，排查时容易误判成后端挂了。
+     现在分别是 400 / 400 / 400，且 500 会额外写一条 `[aigw-ui]` 日志（不再只在界面闪一下）。
+
+  5. **NanoHTTPD 自带日志关掉。** 它把「客户端在响应写完前断开」记成 SEVERE 并打完整栈，
+     而那是完全正常的事（刷新页面、关窗口、点取消）。日志里一堆
+     `SocketException: 你的主机中的软件中止了一个已建立的连接` 只会淹没真故障。
+
+  6. **favicon 404 消除。** 内联 SVG data URI，控制台不再每次多一条红字。
+
+  7. **前端补三条健壮性**
+     · `api.get/post` 统一封装：超时（state 8s / 写 15s / 额度 180s）、
+       非 200 与非 JSON 一律归一成 `{ok:false,message}`。原来每处各写 try/catch，
+       漏一处就是 `Unhandled (in promise) SyntaxError: Unexpected token 'B'`
+       ——这正是本轮第一次巡检抓到的唯一运行时异常。
+     · 窗口隐藏时停心跳（`visibilitychange`），回前台立刻补一次；
+       原来最小化后仍在每 2 秒发一次请求。
+     · 全局 `error` / `unhandledrejection` 兜底：桌面应用没有「默认开着 DevTools」
+       这回事，异常只落 console 等于消失。现在弹 Toast（10 秒内同一条只弹一次，防刷屏）。
+     · 音频转写在**前端先卡 30MB**：base64 会放大 4/3，服务端上限 40MB。
+       不拦的话要等几十秒上传完才收到 413，用户只会觉得「点了没反应」。
+     · 剪贴板复制加降级路径：WebView2 默认不弹 clipboard 权限框、直接 reject，
+       现在退回 `execCommand('copy')` + 隐藏 textarea。
+
+六、代码规范化（没有改变任何行为，只改可维护性）
+
+  Kotlin `:server` 从「1 个 716 行大类」拆成 5 个各管一件事的文件：
+    Json.kt          Gson 取值助手（str/int/bool/array/child）+ 统一响应构造
+    Http.kt          请求模型、响应模型、异常→状态码翻译、POST 强制
+    UiApiServer.kt   只做 HTTP：解析、分派、写响应、静态资源、路径穿越防护
+    UiRoutes.kt      路由表 + 全部业务端点（map 而非 when，加端点是一行）
+    MediaProbe.kt    图像生成/语音转写实测（原来和 HTTP 骨架混在一个类里）
+  EngineHost.kt 的快照从 200 行一个方法拆成 11 个小函数，模型数缓存独立成节。
+  Main.kt 的启动顺序重排：锁 → host → 账号迁移 → UI → 网关 → 端口文件 → 签到定时器。
+
+  C# 壳从「1000 行全在 Program.cs」拆成 6 个文件：
+    ShellArgs.cs       命令行解析（原来 `--eval` 写了两次、后一次覆盖前一次，没人看得出来）
+    ServerLauncher.cs  子进程启停 + 健康检查
+    WindowNative.cs    命中判定（纯函数）+ Win32 互操作 + 自测
+    ShellWindow.cs     主窗口、WebView2 初始化、诊断钩子
+    TitleBar.cs        自绘标题栏
+    Program.cs         入口 + 诊断参数装配
+  删掉：重复的 `IsUiAlive()`（与 `IsUiAliveFor` 同义）、`PortExplicitlySet`（改用 `Port > 0`）、
+  `_dragWatchMoved` 这类只在注释里讲清却没人读的死状态。
+
+  前端 app.js：所有 `style="..."` 内联样式归零（25 处 → 0），
+  全部收进 app.css 的语义类（`.activity-row` `.cell-note` `.row-ops` `.url-bar` …
+  + 四张表的列宽用 `#tblXxx th:nth-child(n)`）。改配色只改一处。
+
+七、本轮实测抓出的一处回归（已修）
+
+  **冷启动（全新数据目录）时外壳等满 90 秒超时，窗口一个都不出。**
+
+  这是本轮重构引入的：原来 `followPortFile` 的判据是「端口文件是否存在」，
+  重构时写成了「是否显式给了 --port」，但这两者不是一回事——
+  全新目录第一次启动时文件还不存在，此时仍必须跟随后端写出的新文件。
+  按「文件不存在就不跟随」处理，外壳会一直盯默认的 8792 ，
+  而后端按目录哈希派生的端口是 18xxx，于是必然等到超时。
+
+  暴露方式：用全新目录直接启动发布版 exe，`shell-launcher.log` 里只有
+  `launch javaw -> True` 就没了，18 秒后进程还在、窗口不出。
+  修法：判据改回「没显式给端口就跟文件」，默认值只作为等待期间的起点；
+  并给 `WaitReady` 加三态返回值（Ready / Exited / Timeout），
+  把「后端自己退了」与「等不到」分成两种提示——前者去查配置与日志，
+  后者多半是端口被占，混成一句「超时」会给出错误的排查方向。
+
+  验证：全新目录 3 秒出窗（`[wait] 后端端口 -> 18222`）；
+  已有目录带旧端口文件同样 3 秒出窗（`[wait] 后端端口 -> 18138`）。
+
+七、本轮抓出并修掉的一处回归（这条最值得记）
+
+  **全新数据目录冷启动 → 外壳等满 90 秒超时，窗口一个都不出。**
+
+  这是本轮重构自己引入的：端口跟随的判据从「端口文件是否存在」
+  错写成「是否显式给了 --port」。但这两者不是一回事——
+  全新目录第一次启动时文件还不存在，此时**仍然必须跟随后端写出的新文件**。
+  按「不跟随」处理，外壳会一直盯默认 8792，而后端按目录哈希派生的端口是 18xxx，
+  于是必然等到超时。
+
+  它只有在「真跑发布版 exe + 全新目录」时才会暴露：单进程测后端永远是通的，
+  用已有目录测也永远是通的（那里有上一次留下的端口文件）。
+  这是本轮唯一由我自己的改动造成的故障，也是唯一一条靠"看代码"发现不了的。
+
+  修法：判据改回「没显式给端口就跟文件」，默认值只作为等待期间的起点；
+  并把 `WaitReady` 改成三态（Ready / Exited / Timeout），
+  让「后端自己退了」与「等不到」给出不同提示——前者要查配置与日志，
+  后者多半是端口被占，混成一句「超时」会把排查方向带偏。
+
+  验证：全新目录 3 秒出窗（`[wait] 后端端口 -> 18222`）；
+  已有目录带残留端口文件同样 3 秒出窗（`[wait] 后端端口 -> 18138`）。
+
+七、本轮抓出并修掉的两处回归 + 一处健壮性缺陷（都是我自己改出来的）
+
+  ① **全新数据目录冷启动 → 等满 90 秒超时，窗口一个都不出。**
+     端口跟随的判据从「端口文件是否存在」错写成「是否显式给了 --port」。
+     但这两者不是一回事：全新目录第一次启动时文件还不存在，此时
+     **仍然必须跟随后端写出的新文件**。按「不跟随」处理，外壳会一直盯
+     默认 8792，而后端按目录哈希派生的端口是 18xxx，必然等到超时。
+     只有「真跑发布版 exe + 全新目录」才暴露：单跑后端永远通，
+     用已有目录测也永远通（那里有上次留下的端口文件）。
+
+  ② **`--port` 完全失效。** 拆文件时把 `UiPort = opts.Port` 那一行丢了，
+     走进 `else` 分支后端口仍是 0。表现是 `--port 18138` 不生效、
+     外壳去连 8792 然后报「后端启动即退出」——**参数无效比崩溃更难查**，
+     因为日志里只有一句"退出了"，看不出是端口压根没被采纳。
+     修法：显式端口必须赋值并跳过文件读取，同时落一行 `[args] 使用显式端口 N`。
+
+  ③ **启动失败会永久挂死（最隐蔽的一条）。** `MessageBox.Show` 是模态的，
+     在没有交互桌面的环境里（CI、远程会话、本机这种 `GetForegroundWindow()==0`
+     的机器）它永远等不到人来点。批量截图时 8 个进程全部卡在同一个
+     隐形的错误框上，**15 分钟没有任何输出**，只在任务管理器里占着。
+     修法：加 `Headless` 概念（给了任何诊断参数即判定为自动化运行），
+     失败时写日志 + 返回退出码（3=后端起不来，4=窗口崩，5=WebView2 初始化失败），
+     绝不弹框。另外「后端刚启动就退出」加一次 1.5 秒重试——
+     那通常是上一实例还在收尾、文件锁没放开。
+
+  验证（修完之后）：
+    · 全新目录 3 秒出窗（`[wait] 后端端口 -> 18222`）
+    · 已有目录带残留端口文件 3 秒出窗（`[wait] 后端端口 -> 18138`）
+    · 同目录重复启动 + 诊断模式 → 9 秒内以退出码 3 结束，日志写明三重原因
+    · `--port 18138` 生效（`[args] 使用显式端口 18138`），11 页截图 11/11 成功
+
+七、交付
+  · 产物：build/release-web/（51.4 MB，exe + WebView2 三个 dll + runtime + app + web）
+  · APP_VERSION 0.9.2 → 0.9.3。
+
+======================================================================
+十四、0.9.4：路由组（core 最后一块「零 UI 入口」的能力）
+======================================================================
+
+这一轮补的是界面上**完全没有入口**的一组能力：core 的 `RoutingGroup`。
+0.9.0 已把账号策略与媒体端点接上，路由组一直没接——服务端只有
+`POST /ui/groups` 一个整表覆盖端点，前端从未调用过它。结果是：
+
+  · 除智能路由页维护的 `auto` 组之外，无法自建任何组；
+  · 组的 `strategy`（ORDER / WEIGHT）无法改；
+  · 7 类分流规则（token 阈值 / 图片 / 压缩请求 / 工作目录 / 时段 / 星期）无法配；
+  · 成员 priority 与 weight 只能手改 `settings/routing_groups.json`。
+
+新增第 12 页「路由组」，把上述全部接上。
+
+一、服务端（`UiRoutes.kt`，+180 行）
+
+  · `GET /ui/groups`：全部组 + 每组的**可解析性**判定。
+    `usableMembers` 只统计「供应商已注册 + 未禁用 + 有可用账号」的成员——
+    网关自己不管这个（组里挂失效成员时它自动跳下一个候选），但界面上
+    必须能看出「这条候选现在选不到号」，否则用户会以为规则没生效。
+  · `POST /ui/groups/save`：**单组**新增/覆盖。
+    与既有的整表端点 `POST /ui/groups` 的区别是不碰别的组：路由组页与
+    智能路由页改的是同一个文件，整表回写会让另一页未刷新时的旧值把
+    对方的改动画回去（实测：在路由组页保存一次，auto 组候选链被覆盖成旧值）。
+  · `POST /ui/groups/delete`：删单组，不存在时 `ok:false` 而不是 404。
+  · `/ui/groups` 本身改成「GET 读 / POST 写」双用，与其它端点保持一致。
+
+二、前端（`web/dist`，第 12 页，约 520 行）
+
+  · 列表：组名 / 策略 / 成员数 / 规则数 / 状态 / 操作。状态列显示
+    `可用成员数/成员数`，四种状态各自可辨（停用 / 无成员 / 全部失效 / ok）。
+  · 编辑区三张卡：组信息（组名、显示名、策略、启停）、成员、规则。
+  · 成员：从**真实模型目录**挑选（未拉取时先说「正在拉取」再拉），
+    支持上移/下移/删除，priority 与 weight 各一个窄输入。
+  · 规则：7 类条件全在弹窗里（token 阈值、图片、压缩请求、工作目录、
+    时段、星期、目标成员）。时段输入 `HH:MM-HH:MM`，跨午夜（22:00-02:00）可填。
+  · `auto` 组只读：成员由智能路由页按目录生成与清理，这里给编辑入口
+    只会让两页互相打回。编辑按钮可点（能查看），删除按钮禁用，无「保存组」。
+
+三、实现中修掉的一个真 bug（走完整流程才暴露）
+
+  **填了组名 → 加个成员 → 组名没了 → 保存报「组名不能为空」。**
+
+  原因：本页会重建整块编辑区（加成员、加规则、成员排序都走 `renderPage`），
+  重建时输入框回显的是草稿里的 `g.id` / `g.name`。原先输入只留在 DOM 里、
+  没写回草稿，于是任何一次重建都会把刚输入的组名清空。
+
+  这条用「看一眼界面」发现不了：填完名字直接点保存是通的，
+  只有在中间插入一次重建才复现——正是深度巡检脚本（见下）抓出来的。
+
+  修法：`input` 事件即写回草稿并标脏；组名同时就地更新「对外 id」那行文本
+  （就地改而不重绘，否则每敲一个字都会抢光标）。
+
+四、验证（全部真实进程，非 mock）
+
+  接口（`tools/uitest/api_probe.py`，67 个请求 / 34 个端点）
+    · 0 个 500。新增 9 个路由组请求：缺 group、缺 id、组名含斜杠、
+      新建含跨午夜规则、覆盖同名组、非法策略枚举、缺 id 删除、删不存在、删正常。
+    · 非法策略枚举 `BOGUS` 回落 ORDER（不报错），组仍保存——
+      与 core 的 `fromJson` 契约一致，界面不需要为它加分支。
+
+  路由（真实网关 `/v1/chat/completions`，`model=group/media-hd`）
+    · 无规则 + WEIGHT 策略 → 选到 trae（权重 3:1 的多数方）；
+    · 加一条恒命中规则指向 codebuddy → **改选 codebuddy**，请求 200 成功；
+    · 时段规则设为「周二 10:00–11:00」（当前周一 00:28）→ 不命中，回到 trae；
+    · 时段规则设为跨午夜 `22:00-02:00`（当前 00:28）→ **命中**，选到 codebuddy；
+    · token 阈值 999999 → 不命中，回到 trae；
+    · 裸组名 `media-hd`（不带 `group/` 前缀）同样可用，返回体 `model` 原样回显。
+
+  界面（真 Chromium headless + CDP）
+    · `tools/uitest/ui_walk.js` 12 页逐页点完每个按钮：异常 0 / console.error 0 / 溢出 0。
+    · 新增 `tools/uitest/ui_groups_walk.js`：通用巡检只会点「页面上已有」的按钮，
+      而本页编辑区是「点了组才出现」的，测不到。这支脚本走完整链路——
+      新建 → 空成员保存被拦 → 从 85 个模型里加 2 个 → 改优先级 →
+      规则弹窗填全 7 类条件 → 保存 → 切页再回来（草稿不丢）→
+      auto 组只读态 → 删除。20 步全通，异常 0、溢出 0。
+
+  压力 / 边界（`tools/uitest/stress.py`）：全部 PASS（keep-alive 60×5、
+  10 线程 × 20 并发写、41MB 体、畸形请求、路径穿越）。
+
+五、交付
+  · 产物：build/release-web/（52.6 MB），APP_VERSION 0.9.3 → 0.9.4。
+  · 页面 11 → 12。侧栏 12 项仍落在 435px 内（nav-item 内边距 5px），无需滚动。
+
+======================================================================
+十五、0.9.5：自定义供应商（补上断掉的闭环 + 一个 Windows 专有崩溃）
+======================================================================
+
+一、为什么这一轮先做它
+  「媒体实测」页的语音转写文案写着「需先在供应商页导入一个自定义供应商并填好
+  凭证」，而供应商页根本没有新建入口——core 的 `settings/custom.json` 只能手改。
+  也就是说：非内置上游（任何 OpenAI 兼容中转）在 Windows 版里从来没被真正配成过。
+  本轮把它补齐，并把「配置能存」走到「真实请求能通」。
+
+二、服务端（`UiRoutes.kt`，+230 行）
+  · `GET /ui/custom`：列表 + 三样界面必需信息——**注册状态**（配置写盘 ≠ 已登记
+    进 registry，中间差一次 `reloadCustomProviders()`）、**规范化后的真实端点**
+    （`https://api.x.com` 实际会打 `/v1/chat/completions`）、**账号数**（配置里的
+    apiKeys 与账号池可能不一致）。
+  · `POST /ui/custom/save`（**单条**，不整表覆盖）：短名规范化、地址规范化、
+    改名时把旧 id 下的账号搬到新 id（先 upsert 再删）。
+  · `POST /ui/custom/delete`：连带删账号。不删的话 registry 摘掉了供应商、
+    账号池里的孤儿账号还占着「账号总数」，且永远不会被任何路由选中。
+  · `POST /ui/custom/models`：用「还没保存」的地址与 Key 拉模型目录，
+    core 的 `ModelFetchResult` 失败原因原样带回（401/404/网络三种说法不同）。
+  · `POST /ui/custom/reload`：配置在盘上但没生效时补一次登记。
+
+三、Windows 专有崩溃（这一轮最要紧的一条）
+  **保存自定义供应商 → 500，报「文件名、目录名或卷标语法不正确」。**
+  根因：账号存储键是 `account/<providerId>/<uid>`，而自定义供应商的 providerId
+  是 `custom:<短名>`——**Windows 文件名不允许冒号**，`File(root, key)` 直接抛。
+  这不是本轮新引入的：只要有人真配过自定义供应商就必然撞上，而 Android 侧
+  文件系统允许冒号，所以上游一直没暴露。
+  修法（`desktop/EncryptedKeyValueStore.kt`）：按键的**每一段**转义 Windows
+  非法字符（`%` 也转义以防二次解码），`keys()` 先把磁盘名解回逻辑键再比前缀。
+  不含这些字符的键（trae / codebuddy / raccoon … 全部内置供应商）编码结果
+  与原文完全一致，**存量数据不需要迁移**。
+
+四、前端（`web/dist`，供应商页新增区块，约 330 行）
+  · 卡片：显示名 + 账号/模型计数 + 「未登记」标记 + provider id 独占一行 +
+    规范化端点独占一行（长 id/长 URL 只折行不截断，标尺 90px 的 `.chain-tag` 会截）。
+  · 弹窗表单：短名（显示名是可读中文时派生不出短名，给 `relayN` 兜底，否则用户
+    填完名字点保存只会看到「短名不能为空」）、接口地址、多行 Key、多行模型，
+    以及「拉取模型列表」把上游真实目录并进模型列表。
+  · 删除走二次确认（会连带删账号）。
+
+五、顺手修掉的两个老问题
+  ① **路由组「状态」列 56px 装不下「全部失效」**（4 字 + 内边距 = 74px，实测
+     `td 74>56` 溢出 18px）。之前没暴露是因为巡检组恰好都有可用成员，走的是
+     3 字分支 `2/2`。改成 78px，从「组名」列让出来（组名两行布局不吃宽）。
+  ② **侧栏接入地址被断成 `…/v` + `1`**。`word-break: break-all` 按字符任意断，
+     端口后面的 `1` 掉到下一行，地址看起来像两段乱码。改成在**最后一个 `/`**
+     处显式插入 `<br>`：上一行 host:port，下一行 `/v1`。
+
+六、验证（全部真实进程，非 mock）
+  接口（`tools/uitest/api_probe.py`，75 个请求 / 39 个端点）
+    · **0 个 500**。新增 12 个自定义供应商请求：缺地址、纯中文名、新建含 Key 与
+      模型、改名、拉模型缺地址、拉模型连接被拒、缺 key 删除、删不存在、
+      删正常（连带账号数正确）、reload 空配置、GET 打 reload（400）。
+  真实链路（本机真起了一个 OpenAI 兼容桩，端口 18991，不是 mock 页面）
+    · 网关 `POST /v1/chat/completions`，`model=custom:stub/stub-chat-1`
+      → 返回 `STUB-OK:stub-chat-1`；桩侧日志确认收到真实 `POST /v1/chat/completions`。
+    · 流式 `stream:true` → SSE 正常分块 + `[DONE]`。
+    · `POST /v1/audio/transcriptions`（真实 0.3s 440Hz WAV，base64 4.8KB）
+      → 返回 `STUB-TRANSCRIBE-OK`，媒体实测页那条「需自定义供应商」的链路通了。
+  界面（真 Chromium headless + CDP）
+    · `ui_walk.js` 12 页：异常 0 / console.error 0 / 溢出 0。
+    · `ui_groups_walk.js` 20 步全通（溢出从 2 处 → 0）。
+    · **新增 `ui_custom_walk.js`**：本区块的编辑表单是「点了添加才出现」的模态窗，
+      通用巡检点不到。13 步全通：空态 → 打开表单 → 中文名派生 `relay1` →
+      保存 → 列表出现且端点已规范化 → 服务端读回注册状态 → 编辑改名（旧 key
+      消失、账号搬过去、贴了 `/chat/completions` 的地址被剥干净）→ 拉模型给出
+      可读原因 → 删除二次确认 → 删后条目数与服务端一致。异常 0、溢出 0。
+      脚本按「比开始时 +1 / 回到开始时」断言，不假设空目录（上一次就是因为
+      假设空目录，第二次跑直接失败）。
+  压力 / 边界（`stress.py`）：全部 PASS。
+  发布版：`build/release-web`（52 MB），APP_VERSION **0.9.5**，外壳自检 12/12；
+    全新数据目录启动 3 秒出窗，真实 WebView2 截图核对侧栏断行与卡片布局。
+
+七、踩到的坑（已写进 MEMORY.md）
+  · 本机 C 盘当时 0 字节可用，`Edit` 工具的 checkpoint 写盘失败（ENOSPC）导致
+    改不了文件；把 `~/.gradle`（11GB）移到 E 盘并建目录联接后恢复，构建也才跑得动。
+  · 巡检脚本必须先轮询到节点出现再点：本页首帧只画「正在读取」，
+    固定 sleep 会在按钮还没生成时点空（报 `Cannot read properties of null`）。
+======================================================================
+十六、0.9.5：修「服务出错了，请稍后重试 / 4001」
+======================================================================
+
+用户实测：客户端调网关，界面连着回
+    服务出错了，请稍后重试
+    We're sorry, the param is invalid. Please try with a valid param. 4001
+
+一、根因（从生产数据的调用记录里查出来的，不是猜的）
+
+  记录里 4 条 FAILED，全部是 `trae / Auto`，error 字段逐字就是上面那句，
+  上游原文是 `{"error":{"code":4001,..."type":"CLIENT"}}`，请求体里写着
+  `{"model":"Auto", ...}`——**首字母大写**。
+
+  而路由组的组名是 `auto`（小写）。`RoutingGroupSettings.find(id)` 用的是
+  `it.id == id` 精确比较，于是 `"Auto"` 没被认成组引用；
+  接着走到「无前缀 → 无条件兜底」，把 `Auto` 当普通模型名塞给了 trae 的某个账号，
+  上游当然不认识这个模型，回 4001 并带一句泛化文案。
+
+  也就是说：**这不是上游的错，是我们把不存在的模型名放过去了。**
+  用户看到的「服务出错了」完全是上游的通用措辞，真正的原因（模型名不存在）
+  被两层掩盖：一层是我们没拦住，一层是上游不会说清。
+
+  为什么客户端会发大写的 `Auto`：部分客户端（Claude Code 一类）会把模型名
+  规范成标题大小写后再发。同一批记录里还有 `trae/trae-auto` 也报 4001——
+  那条前缀被正确识别成 trae，但 `trae-auto` 这个子模型不存在，同样被原样透传。
+
+二、修了四处（三处行为 + 一处文案）
+
+  1. **组名匹配忽略大小写**（`RoutingGroups.find` / `groupIdOf`）
+     精确优先、不区分大小写兜底：`auto` / `Auto` / `AUTO` / `group/Auto` /
+     `GROUP/AUTO` 全部认作同一个组。同时补了 `findAny()`（不过滤 enabled），
+     给界面「读停用中的组」用。
+     没有直接改成 equalsIgnoreCase：组 id 由用户自己命名，万一真有两个只差
+     大小写的组，精确匹配仍优先。
+
+  2. **目录里不存在的模型名 → 明确拒绝，不再兜底透传**（resolveRoute）
+     判据是 `lastGoodCatalog` 快照（**只读字段，不触发上游聚合**，因为这里在
+     路由解析热路径上）。四种情形不拦，避免误杀：
+       · 目录为空（还没拉过）——无从判断
+       · 该供应商在目录里一条都没有（未登录 / 没拉到）——同上
+       · custom 供应商——模型名由用户自定义，认不认由上游答
+       · 子模型确实在目录里（忽略大小写 + 归一化）——放行
+     另一个入口分支也补了：`trae/trae-auto` 这种「前缀对、子模型不存在」同样拒绝。
+
+  3. **报错文案分三种**（`missingModelMessage`）
+     原先「没写 model」与「写了但不存在」共用一句「缺少 model 参数」——
+     用户明明写了，被告知没写，只能去翻客户端配置。现在：
+       · 空 → 缺少 model 参数
+       · 目录未拉 → 无法解析模型名 X：模型目录尚未拉取，可访问 /v1/models 或到「模型目录」页拉取
+       · 目录已就绪但没有 → 模型不存在：X。可用 model 见 /v1/models；路由组请写成 group/<组名>
+
+  4. **server 侧 auto 组匹配也改忽略大小写**（EngineHost / UiRoutes）
+     否则组名写成 `Auto` 时，智能路由页会显示「候选链 0 个」——
+     读不到成员，用户以为链丢了。
+
+三、验证（生产数据副本 + 真实上游）
+
+  · 零误杀自检（.tmp/CatalogRouteCheck.java）：拉真实目录 80 条，
+    **80/80 全部仍可解析**；6 个故意写错的名字（totally-not-a-model /
+    Auto-Turbo / trae/trae-auto / trae/not-exist-model / codebuddy/nonexistent /
+    raccoon/sn-foo）**6/6 全部拦住**。
+    这一条是本次必做验证——「不存在就拒绝」一旦误杀，所有正常调用都会挂，
+    比原来的 4001 严重得多。
+  · 端到端：`Auto` / `auto` / `group/Auto` / `GROUP/AUTO` / `Group/Auto` 全部 SUCCESS；
+    `trae/deepseek-v4.1-flash`、`codebuddy-cn/glm-5.3-flash`、`raccoon/sn-qwen4-max` 正常；
+    `trae/trae-auto` 与 `totally-not-a-model` 返回明确的「模型不存在」。
+  · core 单测 825 项全过；发布版 shell 自测 12/12；11 页按钮巡检
+    exceptions 0 / consoleErrors 0 / overflow 0；接口 57 请求 0 个 500。
+
+  · 修复前后的调用记录对比：02:56 那批 4 条 4001 FAILED（修复前），
+    11:25 这批 6 条全部 SUCCESS（修复后）。
+
+产物：build/release-web/（51.5 MB）。APP_VERSION 保持 0.9.5（本轮是修 bug，未升版号）。
+注意：core 里这两处改动都带 `[aigw-patch]` 标记，下次 sync-core 跟上游时
+需要一并保留，别被覆盖。
+
+======================================================================
+六·n  0.9.7 —— 自定义供应商出图（0.9.5 遗留的另一半）
+======================================================================
+
+背景  0.9.5 给自定义供应商补齐了「导入」这件事（5 个端点 + 模态表单 + Windows 冒号
+      崩溃修复），但它只解决了「这家供应商能不能被网关认出来」。功能上仍缺半条：
+      `CustomProvider.supportsImageGeneration` 恒为继承默认 false，
+      于是 `/v1/images/generations` 的候选表里永远只有 antigravity，
+      而本机 antigravity 0 账号 → 媒体实测页点「生成」永远回
+      「没有支持图片生成的供应商可用（已登录的账号里没有图像模型）」。
+      上一轮把转写那半接上了（`supportsAudioTranscription = true`），出图这半仍是断的。
+
+一、为什么不用「从 models 里猜图像模型」
+  `/v1/models` 把文本模型和图像模型混在一份目录里，命名规律各家不同
+  （`gpt-image-1` / `dall-e-3` / `flux-pro` / `seedream-3` / `imagen-3.0`）。
+  按名字猜错的后果是把文本模型发给图像端点，上游回一句泛化的「不支持的模型」，
+  用户只会以为网关坏了。所以新增一列 `imageModels`，**用户填了才算支持**。
+
+二、改动（core）
+  GatewaySettings.kt · CustomProviderConfig
+    加 `imageModels: List<String>`（默认空）+ `supportsImage` 派生属性。
+    toJson/fromJson 都带上；**老配置没有该字段 → 读到空表 → 行为与升级前完全一致**
+    （这一点单测里专门有一条：删掉 json 里的 imageModels 再反序列化）。
+
+  provider/custom/CustomProvider.kt
+    `supportsImageGeneration = config.supportsImage`
+    `generateImage()`：POST `<base>/images/generations`，客户端原始 JSON **体直通**，
+      只补 model —— `response_format` / `quality` / `style` 网关一个都不改写
+      （中转站靠 response_format 决定回 b64 还是外链，改写等于替用户做决定）。
+    模型取值优先级：网关解析出的 model → 原始体里的 model → 配置第一个图像模型。
+      **不做归一化**：`custom:` 下就是上游真名，resolveModel 的 auto 回落会挑到
+      目录里第一个模型，那多半是文本模型。
+    解析 data[]：b64_json 与 url 都认。只认 b64 时「上游回了外链、界面却说出图失败」。
+    normalizeBaseUrl 新增剥 `/images/generations` 尾巴（用户常把完整端点贴进来）。
+
+  gateway/GatewayHttpServer.kt · imageResponseBody  **[aigw-patch]**
+    修掉一个实测出来的真 bug：原先只要客户端要 `url` 就无条件写
+    `response_format: "b64_json"`。实测现场——客户端要 url、上游确实回了 http 外链、
+    响应里也真有 url，却仍被标成 b64_json，客户端按该字段当 base64 解析直接失败。
+    改成「要 url 但实际只给了 base64」才标降级；真有外链时保持沉默。
+
+三、改动（server）
+  UiRoutes.customJson  增加 supportsImage / imageCount / imageModels / imageEndpoint
+  UiRoutes.saveCustomConfig
+    接收 imageModels，且**请求里没有这个字段时保留原值**：
+    旧前端或第三方脚本只传 models，直接当空数组会清掉已配好的出图能力，
+    症状是「编辑一次供应商，出图就坏了」。
+  MediaProbe.image
+    原来只认 b64_json，上游只回外链时界面上「出图成功但看不到图」。
+    现在两种都转成 dataUrl（外链直接透传，不伪造托管地址）。
+
+四、改动（前端）
+  供应商页
+    表单新增「图像模型」多行框（独占一个 field，不与别的字段挤在一行）
+    列表条目加「出图 N」标签（媒体页说没有图像供应商时，用户要能在这一页看出谁能出图）
+  媒体实测页
+    出图空态归因**分两句**：内置供应商没能力 / 自定义供应商没填图像模型。
+    混成一句「没有已登录账号声明了图像能力」时，用户会去账号页翻，而问题在配置里。
+    另：`renderMedia` 补一次 loadCustomProviders —— S.custom 原先只在供应商页加载，
+    直接进媒体页时它恒为空，那句按自定义供应商分情况的提示永远落不到。
+
+五、顺手修的两个前端/巡检问题
+  1. `.mini-btn` 的 20px 固定宽装不下两个汉字
+     路由组页脚注的「查看」实测 sw 23 > w 20，多出的 3px 被裁掉一半笔画。
+     新增 `.mini-btn.wide`（width:auto + 两侧 5px 内边距），实测 33/33 无溢出。
+  2. ui_walk.js 在强制更新态下会卡死（**巡检自身的 bug，会误伤下次自动巡检**）
+     更新清单 force=true 且本机版本 ≤ 清单版本时，概览页立刻弹不可关闭的强制窗，
+     巡检每页第一步就卡在里面 —— 实测 13 分钟一个页面都没走完。
+     新增 dismissForceUpdate()：切页前后各拆一次，并置 S.forceShown/S.forceOpen
+     防心跳把弹窗推回来。判定用标题（强制窗挂在通用 modalMask 上，没有独立 id）。
+  3. ui_groups_walk.js 的 auto 断言仍在按旧设计写
+     0.9.4 起 groups 表**刻意不再列 auto 行**，改为卡片底部一行脚注。巡检却仍在断言
+     「表里必须有 auto 行」，于是永远报「启用智能路由后仍没有 auto 组」——巡检 bug。
+     改成断言三件独立成立的事：服务端有 auto 组 / 表里没有 auto 行 / 脚注存在且带跳转。
+
+六、验证
+  单测  core/src/test/.../custom/ImageGenerationProviderTest.kt **10 项全过**
+        覆盖：无图像模型→400 且提示指向该改的字段、原始参数不被改写、模型取值优先级、
+              auto 视为没给、只回 url 能解析、非图像响应当失败、上游报错原样带回、
+              端点规范化、配置往返、老配置缺字段。
+  端到端（真网关 + 两个真桩，桩侧 POST 日志作独立证据，非网关自说自话）
+        未声明图像模型 → /ui/media/image 与 /v1 都回「没有支持图片生成的供应商」
+        补 imageModels 后 → 出图成功，桩收到 model=stub-image-1 response_format=b64_json
+        （桩是 stub-image-1，网关把文本模型塞过来会被桩 400 拒绝 —— 这条就是选错模型的独立证据）
+        客户端要 url、上游回外链 → 响应有 url，且不再带 response_format（修复前会误标）
+        客户端要 url、上游只回 b64 → 响应有 b64_json + response_format: b64_json
+        客户端显式给文本模型 → 上游 400 原话透传，不编造、不无限换号
+        转写链路回归 → multipart 逐字节到达，中文文件名与 0x80 字节未被改写
+  巡检  接口 79 请求 / 15 个非 200 全是语义正确的 400/404，**0 个 500**
+        12 页按钮巡检 exceptions 0 / consoleErrors 0 / overflow 0
+        路由组深度 22 步全过 / issues [] / overflow 0
+        自定义供应商深度 13 步全过 / errors [] / overflow 0
+        压力全 PASS（含 41MB 拒绝、畸形请求、路径穿越）
+        壳自测 12/12
+  正式版  覆盖安装后 8792 起 0.9.7（12 账号 / 6 供应商 / running）
+        真实 chat：非流式「收到」、流式多帧 SSE 正常
+        更新检查：current 0.9.7 / latest 0.9.6 / hasUpdate false / mandatory false
+        定点验证（直接从概览页进媒体页，不经过供应商页）：
+          提示 = 「图像供应商：无（自定义供应商「提示桩」没有填图像模型；到供应商页
+                  编辑它，在「图像模型」里填一个真实模型名即可出图）」→ 归因正确
+          表单有 ccImageModels（rows=2）、占位符与提示文案分两种状态
+          脚注「查看」按钮 w=33 sw=33、class=mini-btn wide
+        探针数据已清（自定义 0 条、账号回 12、组表只剩 auto 5 成员）
+
+七、未验证（缺环境，非代码问题）
+  · 真实第三方中转站出图：本机没有可用的中转站 Key，只用了两个自建 OpenAI 兼容桩。
+    桩的口径按 OpenAI 官方 /images/generations 实现（b64 与外链两种回法各一），
+    但各家中转站的字段差异（`data[].url` 有效期、`output_format`）未覆盖。
+  · antigravity 出图：0 账号，那半分支（只有 b64）用 b64-only 桩间接验证了降级标注。
+
+
+======================================================================
+六·o  0.9.9 —— 同步上游 v2.37.2 + 暴露「安全防护」
+======================================================================
+
+上游  跟随 ref: main（release tag 仍停在 v2.37.1，但 main 已推到 v2.37.2，versionCode 229）。
+      本轮把 core 整包换成 main，再手工把 4 处自家补丁打回去。
+
+一、上游这一版带来什么
+  1. Anthropic Messages 协议入口（新文件 protocol/AnthropicMessages.kt）
+     POST /v1/messages 把 Anthropic 请求翻成 OpenAI 请求发给上游，响应再翻回去。
+     Claude Code 这类只会讲 Anthropic 协议、还只认 x-api-key 的客户端终于能直连。
+     流式也做了：message_start / content_block_delta / message_stop 一整套事件。
+  2. 本地隐私脱敏（新文件 security/PrivacyRedactor.kt，默认关闭）
+     出网前把 key、邮箱换成 __AIGW_n__ 占位符，响应回来后还原，对客户端透明。
+  3. /v1/models 有了快照与后台刷新（stale-while-revalidate，TTL 60s）
+     「客户端轮询模型列表时偶尔拿到空列表」的根因就在这——原来每次都要等所有供应商。
+     聚合预算也从「每家一个超时」改成「整轮 5 秒」：卡住的那家直接跳过。
+  4. CodeBuddy 上游指纹打散（DeepSeek Runtime / project root / 11-128 插零宽空格）。
+  5. RoutingGroups 的 `findAny()` 与子模型校验被上游吸收了（我方同名补丁不再需要）。
+
+二、我怎么保住自家补丁的（4 处，一件都不能丢）
+  · GatewayEngine.kt —— 目录快照三件套。上游新版改成 TTL 快照，但**快照未建立时会同步
+    打一轮上游**；UI 每 2 秒读一次模型数，那种情况会把界面拖住。所以仍保留
+    lastGoodCatalog 只读副本（`cachedExposedModels` / `cachedExposedModelsQuiet`），
+    由 refreshModelsSnapshot() 成功时顺手写入。路由热路径的两个校验函数照旧。
+  · GatewayHttpServer.kt —— ① 调用记录 upstreamModel 参数；
+    ② missingModelMessage（区分「没写 model」与「写了但不存在」）；
+    ③ imageResponseBody 只在外链缺失时才标 b64_json。
+  · GatewaySettings.kt / CustomProvider.kt —— 自定义供应商 imageModels 与出图直通。
+  · RoutingGroups.kt —— 组名与 group/ 前缀忽略大小写（上游版只认小写）。
+  · CallLogStore.kt —— upstreamModel 字段（**这处仍未打 [aigw-patch] 标记，最容易在下次同步时丢**）。
+  · AntigravityProvider.kt —— OAuth 凭据外置（推 GitHub 被 secret scanning 拦过，绝不能回到硬编码）。
+
+三、顺手接上「安全防护」页（core 早有、界面从来没有入口）
+  高级策略页新增第四张卡，四个控件：
+  · 敏感词零宽脱敏        只改 system 消息里的敏感词，不动 user 输入
+  · 本地隐私脱敏          上游看到占位符，客户端拿回原文（默认关）
+  · 账号限速间隔（毫秒）  0 = 不限；开了会明显拖慢首字
+  · 节拍抖动（毫秒）      在间隔上叠随机，避免固定节奏被风控打标
+  后端 `GET /ui/strategy` 多一个 `security` 块；`POST /ui/strategy/save` 收到 `security`
+  才覆盖——**只传 failover 的老调用方不会把 security.json 洗掉**（已实测）。
+  自定义敏感词词表仍要在 settings/security.json 里编辑，本页只读条数。
+
+四、修掉一个上游的真 bug（流式还原会泄漏占位符）
+  现象：非流式正常，流式下客户端收到 `__AIGW_1` + 下一帧的 `__`，占位符原样漏出去。
+  根因：StreamingRestorer.holdbackLength() 的回看上限写成 `最长占位符长度 - 1`，
+        于是「整段文字正好以完整占位符结尾」这种情况永远看不到完整串，退化成按 `__`
+        前缀回看，把最后两个字符扣下；剩下的 `__AIGW_1` 拿去匹配还原表自然落空。
+  修法：上限放到完整长度 + 命中完整占位符直接返回 0；前缀判定加 `length > n`
+        （排除「短占位符恰好是长占位符前缀」的误判）。
+  回归用例：`流式还原能处理占位符正好落在 chunk 末尾`（core 测试 861 → 862）。
+
+五、验证（全部真实进程，非 mock）
+  · core 单测 862 / 0 失败（上游 851 + 本轮新增 1 + 自家出图 10）
+  · api_probe 75 请求 / 39 端点 → 0 个 500，非 200 的全是语义正确的 400/404
+  · stress：keep-alive 60 轮 × 5、10 线程 × 20 并发写、41MB 体、畸形请求 → 全 PASS
+  · 12 页巡检 exceptions 0 / consoleErrors 0 / overflow []
+  · 路由组深度巡检 22 步全通；新的 `ui_strategy_walk.js` 9 步全通（安全卡往返 + 溢出）
+  · 隐私脱敏端到端（自建记录桩把 upstream 视角的请求体落盘，作独立证据）：
+      客户端发「邮箱 tao@example.com + key sk-proj-…」
+      上游收到「邮箱 __AIGW_2__，key __AIGW_1__」
+      非流式：客户端拿回原文；流式：修复后同样拿回原文（修复前是残缺占位符）
+  · Anthropic 入口：`POST /v1/messages` 非流式回 type/role/content/usage；
+    流式回 message_start → content_block_delta → message_stop 完整序列
+  · 壳截图：高级策略页「安全防护」卡四个字段齐全、无溢出（--scroll 700）
+  · 正式实例覆盖安装后 8792 起 0.9.9：13 账号 / running；
+      modelsMeta count=115（说明 EngineHost 的刷新路径改动生效，不是永远 0）
+      真实 chat `model=auto` 回「收到」，调用记录 upstreamModel 记到
+      `deepseek/deepseek-v4.1-flash-economy`（auto 展开正确）
+      `.update-gate.json` 不存在（闸门解锁，未被强制更新拦住）
+
+六、未验证
+  · 真实 Claude Code 客户端接 /v1/messages：本机没有该客户端，只用 curl 按协议形状验的。
+    各家对 `tool_use` / `thinking` block 的处理差异未覆盖。
+  · 隐私脱敏的误伤边界：内置规则只认带固定前缀的密钥与邮箱字形，其它形态（如裸 32 位
+    十六进制串）不会被替换——这是上游刻意的口径，不是缺陷，但没做过大规模真实语料测试。
