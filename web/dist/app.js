@@ -4808,7 +4808,10 @@ function renderBackup() {
   ib.appendChild(el('p', 'desc mono selectable', (d.scope || []).join(' · ')));
   ib.appendChild(el('p', 'desc',
     '不含 webview2/（Chromium 缓存，约 80 MB，与本项目数据无关）、.instance.json（写死旧端口）、'
-    + '.update-cache.json。调用记录默认带上，可在创建时关掉。'));
+    + '.update-cache.json。调用记录默认带上；关掉后包会小一半，但恢复后「调用记录」页是空的。'));
+  ib.appendChild(el('p', 'desc',
+    '恢复会先把当前数据整体快照一份（回滚包），再替换上面这些条目；'
+    + '回滚包同样出现在列表里，恢复错了可以直接回退。'));
   info.appendChild(ib);
   body.appendChild(info);
 }
