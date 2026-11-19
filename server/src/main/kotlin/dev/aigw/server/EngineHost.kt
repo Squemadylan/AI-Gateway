@@ -51,6 +51,14 @@ class EngineHost(val dataDir: File) {
 
     val autoRoute = AutoRouteManager(engine, dataDir)
 
+    /**
+     * 数据目录备份/恢复。
+     *
+     * 放在 host 上而不是端点里现建：它要读写 `dataDir`、也要在启动早期（
+     * 加密存储打开之前）被 Main 调用一次，两处必须用同一个实例。
+     */
+    internal val backup: BackupManager = BackupManager(dataDir)
+
     /** 写操作串行锁。 */
     private val writeLock = Any()
 

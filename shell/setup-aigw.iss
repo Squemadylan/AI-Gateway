@@ -1,4 +1,4 @@
-; AI Gateway 0.9.8 安装包定义
+; AI Gateway 0.9.9 安装包定义
 ;
 ; 由 build-installer.ps1 生成产物，**不写 LicenseFile**：用户要求安装包里不带授权文件。
 ; 安装流程刻意压到三步：选目录 → 安装 → 完成（DisableProgramGroupPage 去掉程序组页）。
@@ -6,7 +6,7 @@
 [Setup]
 AppId={{8E4C1A72-9F3B-4D6A-B0E7-2C9A5D1F6B83}
 AppName=AI Gateway
-AppVersion=0.9.8
+AppVersion=0.9.9
 AppPublisher=AIGateway
 DefaultDirName={autopf}\AI Gateway
 DefaultGroupName=AI Gateway
@@ -18,7 +18,7 @@ DisableDirPage=no
 ; 重装时记住上次选的目录（升级不必每次重挑）
 UsePreviousAppDir=yes
 OutputDir=__OUTDIR__
-OutputBaseFilename=AI-Gateway-Setup-0.9.8
+OutputBaseFilename=AI-Gateway-Setup-0.9.9
 Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern

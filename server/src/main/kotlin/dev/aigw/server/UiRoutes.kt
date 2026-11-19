@@ -123,6 +123,25 @@ internal class UiRoutes(private val host: EngineHost) {
         "/ui/media/image" to { req -> ensurePost(req); MediaProbe(engine).image(req.json) },
         "/ui/media/transcribe" to { req -> ensurePost(req); MediaProbe(engine).transcribe(req.json) },
 
+        // ---- 备份与恢复
+        // 备份包在**数据目录之外**（`<dataDir>/../backups`）：放里面的话"先清空再解压"
+        // 会把备份自己删掉。恢复走两段式——这里只登记，真正替换发生在下次进程启动
+        // （见 Main 里 BackupManager.applyPending()），因为正在跑的进程持有 secure/ 句柄。
+        "/ui/backup" to { req -> UiOut.Json(host.backup.list()) },
+        "/ui/backup/create" to { req ->
+            ensurePost(req)
+            UiOut.Json(host.backup.create(req.json.boolOr("includeCallLogs", true)))
+        },
+        "/ui/backup/delete" to { req ->
+            ensurePost(req)
+            UiOut.Json(host.backup.delete(req.requireStr("name", "备份名")))
+        },
+        "/ui/backup/restore" to { req ->
+            ensurePost(req)
+            UiOut.Json(host.backup.requestRestore(req.requireStr("name", "备份名")))
+        },
+        "/ui/backup/cancel" to { req -> ensurePost(req); UiOut.Json(host.backup.cancelRestore()) },
+
         // ---- 更新
         // 强制更新的「检查」端点。零服务器：清单是 GitHub 仓库里的一个 update.json，
         // 发布新版只改文件 + commit，客户端 raw 拉取即生效。

@@ -160,7 +160,7 @@ const WALK = `
     return MUTATING_LABEL.test(txt) || MUTATING_TITLE.test(title);
   }
 
-  const PAGES = ['overview','logs','providers','accounts','models','smartRoute','groups','gateway','keys','calls','strategy','media'];
+  const PAGES = ['overview','logs','providers','accounts','models','smartRoute','groups','gateway','keys','calls','strategy','media','backup'];
   for (const page of PAGES) {
     // 切页前先拆强制更新弹窗：它是模型态的，不拆则第一页就停在这里（实卡 13 分钟）
     dismissForceUpdate();

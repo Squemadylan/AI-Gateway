@@ -26,11 +26,22 @@ sh tools/uitest/run_all.sh <UI_PORT>
 | 脚本 | 做什么 | 通过标准 |
 |---|---|---|
 | `api_probe.py <port>` | 75 个请求打全部 39 个端点：读、写、缺参、非法参、GET 打写接口、畸形 JSON、超大请求体 | 非 200 的必须是语义正确的 400/404/413，**不能有 500** |
-| `ui_walk.js <baseUrl> <out.json>` | 真 Chromium 打开页面，12 页逐页点完每个按钮/开关/tab/表格行；每步判断弹窗与 Toast 并关闭 | `exceptions: 0`、`consoleErrors: 0`、`overflow: []` |
+| `ui_walk.js <baseUrl> <out.json>` | 真 Chromium 打开页面，13 页逐页点完每个按钮/开关/tab/表格行；每步判断弹窗与 Toast 并关闭 | `exceptions: 0`、`consoleErrors: 0`、`overflow: []` |
+| `ui_backup_walk.js <baseUrl> <out.json>` | 备份页的**深度**巡检：创建 → 接口 +1 → 列表行数同步 → toast → 点恢复 → 二次确认 → pending 出现 → 「等待生效」卡渲染 → 取消 → 删除 -1 → 切走切回。通用巡检点不到（恢复是两段式的，且写操作要跳过） | 12 步全通、`issues: []`、`overflow: 0`；宽/窄窗口各跑一轮 |
 | `ui_groups_walk.js <baseUrl> <out.json>` | 路由组页的**深度**巡检：新建 → 空成员被拦 → 从模型目录加成员 → 改优先级 → 规则弹窗填全 7 类条件 → 保存 → 切页回来 → auto 只读 → 删除。通用巡检点不到编辑区（它是「点了组才出现」的） | 20 步全通、`exceptions: 0`、`overflow: 0`、`issues: []` |
 | `ui_custom_walk.js <baseUrl> <out.json>` | 供应商页「自定义供应商」区块的深度巡检：中文名派生短名 → 保存 → 列表显示规范化端点 → 编辑改名（账号搬过去）→ 拉模型（预期失败要给出可读原因）→ 删除二次确认。通用巡检点不到（表单是模态窗） | 13 步全通、`errors: []`、`overflow: 0` |
 | `stress.py <port>` | keep-alive 复用连接 60 轮 × 5 请求、10 线程 × 20 并发写、41MB 请求体、畸形请求 | 全 PASS，且压力后服务仍可响应 |
 | 壳自测 | `shell/out/release/AiGatewayWeb.exe --selftest <out.txt>` | `12 / 12 passed`（命中判定表，含最大化态与按钮区） |
+
+## 备份页为什么要单独一支
+
+通用 `ui_walk.js` 只点页面上已存在的按钮，而备份页有三个它验不到的特征：
+① 恢复是两段式的（登记 → 重启生效），「点了没反应」与「功能坏了」在界面上长得一样；
+② 「待恢复」与「上次恢复」卡只在特定状态下出现，必须真的造出那个状态；
+③ 列表是动态增删的，要确认创建后真的多一条、删除后真的少一条。
+
+注意 **Toast 只活 3–5 秒**：创建备份要等 2–3 秒落盘，先读 toast 再读接口，
+顺序反了会把「提示已消失」误判成「没有成功提示」（本轮第一次跑就这么误判过）。
 
 ## 为什么这些必须自动化
 

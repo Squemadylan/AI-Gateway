@@ -47,6 +47,8 @@ def main():
     call("GET", "/ui/calls?limit=20")
     call("GET", "/ui/strategy")
     call("GET", "/ui/groups")
+    call("GET", "/ui/custom")
+    call("GET", "/ui/backup")
     call("GET", "/")
     call("GET", "/unknown/page")
     call("GET", "/ui/does-not-exist")
@@ -125,6 +127,18 @@ def main():
     call("POST", "/ui/credits/refresh", {"providerId": "__nope__"}, "不存在的供应商")
     call("POST", "/ui/cooling/clear", "not-json", "畸形 JSON")
 
+    print("== 备份 ==")
+    # 只测**拒绝路径**：创建/恢复会往测试数据目录里真的写文件，
+    # 泛用探针必须跳过写操作（同一目录可能被别的用例复用）。
+    call("GET", "/ui/backup")
+    call("POST", "/ui/backup/delete", {}, "缺 name")
+    call("POST", "/ui/backup/delete", {"name": "../evil.zip"}, "删除穿越路径")
+    call("POST", "/ui/backup/delete", {"name": "__nope__.zip"}, "删除不存在的备份")
+    call("POST", "/ui/backup/restore", {}, "恢复缺 name")
+    call("POST", "/ui/backup/restore", {"name": "../evil.zip"}, "恢复穿越路径")
+    call("POST", "/ui/backup/restore", {"name": "__nope__.zip"}, "恢复不存在的备份")
+    call("POST", "/ui/backup/cancel", {}, "取消（当前无 pending）")
+
     print("== 开关类 ==")
     call("POST", "/ui/auto/toggle", {"enabled": False})
     call("POST", "/ui/auto/toggle", {"enabled": True})
@@ -167,6 +181,8 @@ def main():
     print("== 方法校验（本轮重点：GET 不应能改数据） ==")
     call("GET", "/ui/theme?theme=light", None, "GET 改主题")
     call("GET", "/ui/account/delete", None, "GET 删账号（危险）")
+    call("GET", "/ui/backup/create", None, "GET 建备份（应 400）")
+    call("GET", "/ui/backup/restore?name=x.zip", None, "GET 恢复（应 400）")
 
     bad = [r for r in RESULTS if r[2] != 200]
     print("\n=== 汇总 %d 个请求，非 200 有 %d 个 ===" % (len(RESULTS), len(bad)))

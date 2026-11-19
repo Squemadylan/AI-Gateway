@@ -23,7 +23,12 @@ antigravity-oauth.json
 .tmp/
 core-backup-*/
 *.bak
+*.bak-*
 *.orig
+
+# 巡检产物（可重生成，且每次内容都不同）
+tools/uitest/*-walk.json
+tools/uitest/walk-run.json
 
 # ---- WebView2 SDK 下载缓存（dll 保留，编译外壳需要引用） ----
 shell/lib/*.zip

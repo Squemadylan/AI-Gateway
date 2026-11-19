@@ -13,5 +13,7 @@ echo "== 路由组深度 =="
 "$NODE" tools/uitest/ui_groups_walk.js http://127.0.0.1:$PORT tools/uitest/groups-walk.json | tail -8
 echo "== 自定义供应商深度 =="
 "$NODE" tools/uitest/ui_custom_walk.js http://127.0.0.1:$PORT tools/uitest/custom-walk.json | tail -8
+echo "== 备份深度 =="
+"$NODE" tools/uitest/ui_backup_walk.js http://127.0.0.1:$PORT tools/uitest/backup-walk.json | tail -8
 echo "== 压力 =="
 "$PY" tools/uitest/stress.py $PORT | tail -3

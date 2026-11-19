@@ -54,6 +54,17 @@ fun main(args: Array<String>) {
     }
 
     val uiPort = resolvePort(args) ?: scope.uiPort
+
+    // 待恢复的备份**必须在打开加密存储之前落地**。
+    //
+    // 两个理由：① 上一个进程退出时才会放开 `secure/` 下的文件句柄，能到这一行
+    // 说明实例锁已经拿到、旧进程确实不在了；② EngineHost 构造时会立即
+    // createDesktopStore()（读 master.key + 打开 secure/），之后再替换文件，
+    // 内存里留下的就是旧账号池，表现成「恢复了但界面还是老数据」。
+    // 这里的实例只是文件操作，不持有任何 core 状态，与 host.backup 各用各的。
+    val restoreNote = BackupManager(dataDir).applyPending()
+    if (restoreNote != null) println("[aigw-server] $restoreNote")
+
     val host = EngineHost(dataDir).also {
         it.derived = scope.derived
         it.uiPort = uiPort

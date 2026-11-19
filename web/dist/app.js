@@ -110,6 +110,8 @@ const S = {
   custom: [],
   customLoaded: false,
   media: null,
+  backupList: null,
+  backupLoaded: false,
   tableSig: '',
   activitySig: '',
   saveStrategy: null,
@@ -362,6 +364,7 @@ const PAGES = {
   // 以后要跟进时，index.html 加回那一个 <a data-page="media"> 即可，不用重写整页。
   // 删掉反而会在恢复时丢掉 400 行可复用代码。
   media: ['媒体实测', '图片生成与语音转写的真实链路验证'],
+  backup: ['备份与恢复', '数据目录快照；恢复在下次启动时执行'],
 };
 
 function go(page) {
@@ -374,6 +377,8 @@ function go(page) {
   if (page === 'groups' && !S.groupDirty) S.groupsLoaded = false;
   // 自定义供应商：每次进供应商页都重读（账号页删除账号会改变账号数）
   if (page === 'providers') S.customLoaded = false;
+  // 备份页每次进入都重读：别处可能刚删了备份，或上次恢复已经落地
+  if (page === 'backup') S.backupLoaded = false;
   document.querySelectorAll('.nav-item').forEach((n) => {
     n.classList.toggle('active', n.dataset.page === page);
   });
@@ -4642,6 +4647,197 @@ function readFileAsBase64(file) {
   });
 }
 
+// ---------------------------------------------------------------- 备份与恢复
+
+/**
+ * 备份与恢复。
+ *
+ * 这一页只做两件事：让用户拿到一份可回滚的快照；让用户知道"恢复还没生效"。
+ * 恢复是两段式的——点了之后只登记，真正的替换发生在下次进程启动
+ * （旧进程正持有 secure/ 下的文件句柄，边跑边替换会读到半个账号池）。
+ * 界面必须把这件事说清楚，否则用户点完发现"什么都没变"，会以为功能坏了。
+ */
+async function loadBackup() {
+  const r = await api.get('/ui/backup');
+  if (!r || r.ok === false) {
+    S.backupList = null;
+    S.backupLoaded = true;
+    return;
+  }
+  S.backupList = r;
+  S.backupLoaded = true;
+}
+
+function renderBackup() {
+  const body = $('#pageBody');
+  body.innerHTML = '';
+
+  if (!S.backupLoaded) {
+    S.backupLoaded = true;
+    body.innerHTML = `<div class="empty"><span class="big">正在读取备份目录</span>
+      <span>扫描 &lt;数据目录&gt;/../backups</span></div>`;
+    loadBackup().then(() => {
+      if (S.page === 'backup') renderPage();
+    });
+    return;
+  }
+
+  const d = S.backupList;
+  if (!d) {
+    body.innerHTML = `<div class="empty"><span class="big">读不到备份目录</span>
+      <span>管理面接口未响应，稍后重试或看运行日志</span></div>`;
+    return;
+  }
+
+  const actions = $('#pageActions');
+  actions.innerHTML = '';
+  const bNew = el('button', 'btn primary', '立即备份');
+  bNew.id = 'btnBackupNow';
+  bNew.addEventListener('click', () => createBackup(bNew));
+  actions.appendChild(bNew);
+
+  // ---- 待恢复提示：必须排在最上面，否则用户会以为"已经恢复了"
+  const pending = d.pending;
+  if (pending) {
+    const card = el('div', 'card card-alert');
+    card.appendChild(headWith('有一次恢复等待生效', '重启应用后执行'));
+    const b = el('div', 'card-body pad-top');
+    b.appendChild(el('p', 'desc', `待恢复：${pending.name}（登记于 ${new Date(pending.requestedAtMillis).toLocaleString('zh-CN')}）`));
+    if (!pending.available) {
+      b.appendChild(el('p', 'desc err-text',
+        '备份文件已不存在（可能被移动或删除），重启时会自动跳过。可以先取消，再重新挑一份。'));
+    } else {
+      b.appendChild(el('p', 'desc',
+        '重启时先把当前数据整体快照一份（回滚点），再替换白名单内的条目。'
+        + 'webview2 缓存与调用记录的取舍以备份时的选择为准。'));
+    }
+    const row = el('div', 'action-row');
+    const cancel = el('button', 'btn', '取消这次恢复');
+    cancel.addEventListener('click', async () => {
+      setBtnBusy(cancel, true, '取消中…');
+      const r = await api.post('/ui/backup/cancel', {});
+      setBtnBusy(cancel, false, '');
+      toast(r.ok ? '已取消' : '取消失败：' + r.message, r.ok ? 'ok' : 'err');
+      if (r.ok) { await loadBackup(); if (S.page === 'backup') renderPage(); }
+    });
+    row.appendChild(cancel);
+    b.appendChild(row);
+    card.appendChild(b);
+    body.appendChild(card);
+  }
+
+  // ---- 上次恢复结果：失败必须显式可见（静默失败是最坏的结果）
+  const last = d.lastRestore;
+  if (last) {
+    const card = el('div', 'card');
+    card.appendChild(headWith('上次恢复', new Date(last.atMillis).toLocaleString('zh-CN')));
+    const b = el('div', 'card-body pad-top');
+    const p = el('p', last.failed ? 'desc err-text' : 'desc', last.message || '');
+    b.appendChild(p);
+    if (last.rollback) b.appendChild(el('p', 'desc', `回滚包：${last.rollback}（在下面的列表里，可直接恢复回去）`));
+    card.appendChild(b);
+    body.appendChild(card);
+  }
+
+  // ---- 备份列表
+  const items = d.items || [];
+  const card = el('div', 'card');
+  card.appendChild(headWith('备份列表', `${items.length} 份 · ${d.dir}`));
+  const wrap = el('div', 'table-wrap');
+  const table = el('table', 'grid grid-fixed compact');
+  table.id = 'tblBackup';
+  // 5 列、内容区 602px：时间 96 / 大小 66 / 条目 44 / 版本 52 / 操作 余量。
+  // 列宽按最长真实值量（「11-20 00:22」≈ 76、「2.4 MB」= 46、「0.9.9」= 34），
+  // 留出内边距后加起来约 258，剩下的全给操作列——两个按钮在 90px 里放得下。
+  table.innerHTML = `<thead><tr>
+    <th style="width:96px">创建时间</th><th style="width:66px">体积</th>
+    <th class="num" style="width:44px">条目</th><th style="width:52px">版本</th>
+    <th style="width:96px">操作</th>
+  </tr></thead>`;
+  const tbody = el('tbody');
+  if (items.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="5"><div class="empty">
+      <span class="big">还没有备份</span>
+      <span>点右上角「立即备份」，会在数据目录旁边生成一份 .zip（含 master.key，否则密文解不开）</span></div></td></tr>`;
+  } else {
+    items.forEach((it) => {
+      const tr = el('tr');
+      // 时间列用 atMillis 格式化，不用文件名里的时间戳：
+      // `20261120-001822` 这种紧凑串扫一眼读不出来，而这里本来就排了序、
+      // 只差"这是哪一天几点"这一个信息。
+      const when = new Date(it.atMillis);
+      const p2 = (x) => String(x).padStart(2, '0');
+      const whenText = `${p2(when.getMonth() + 1)}-${p2(when.getDate())} `
+        + `${p2(when.getHours())}:${p2(when.getMinutes())}`;
+      tr.innerHTML = `
+        <td class="cell-muted mono">${esc(whenText)}</td>
+        <td class="cell-muted">${esc(it.sizeText || '—')}</td>
+        <td class="num cell-muted">${it.entryCount || 0}</td>
+        <td class="cell-muted">${esc(it.appVersion || '—')}</td>
+        <td></td>`;
+      tr.title = it.name + (it.includeCallLogs ? '' : '\n（不含调用记录）');
+      const ops = el('div', 'row-ops');
+      const restore = el('button', 'mini-btn wide', '恢复');
+      restore.title = '把数据替换成这份备份（重启后生效）';
+      restore.addEventListener('click', () => requestRestore(it.name));
+      const del = el('button', 'mini-btn danger', '✕');
+      del.title = '删除这份备份';
+      del.addEventListener('click', async () => {
+        const yes = await confirmBox('删除备份', `确定删除 ${it.name}？删掉后这份回滚点就没了。`);
+        if (!yes) return;
+        const r = await api.post('/ui/backup/delete', { name: it.name });
+        toast(r.ok ? '已删除' : '删除失败：' + r.message, r.ok ? 'ok' : 'err');
+        if (r.ok) { await loadBackup(); if (S.page === 'backup') renderPage(); }
+      });
+      ops.append(restore, del);
+      tr.lastElementChild.appendChild(ops);
+      tbody.appendChild(tr);
+    });
+  }
+  table.appendChild(tbody);
+  wrap.appendChild(table);
+  card.appendChild(wrap);
+  body.appendChild(card);
+
+  // ---- 说明卡：范围与位置必须写出来，否则用户不知道"备份到底带走了什么"
+  const info = el('div', 'card');
+  info.appendChild(headWith('备份范围', '白名单制，不是整目录打包'));
+  const ib = el('div', 'card-body pad-top stack-12');
+  ib.appendChild(el('p', 'desc',
+    `存放目录：${d.dir}（在数据目录之外——放在里面的话「先清空再解压」会把备份自己删掉）`));
+  ib.appendChild(el('p', 'desc mono selectable', (d.scope || []).join(' · ')));
+  ib.appendChild(el('p', 'desc',
+    '不含 webview2/（Chromium 缓存，约 80 MB，与本项目数据无关）、.instance.json（写死旧端口）、'
+    + '.update-cache.json。调用记录默认带上，可在创建时关掉。'));
+  info.appendChild(ib);
+  body.appendChild(info);
+}
+
+async function createBackup(btn) {
+  setBtnBusy(btn, true, '备份中…');
+  // 带调用记录时整包约 2–3 MB、100+ 个小文件，给足超时
+  const r = await api.post('/ui/backup/create', { includeCallLogs: true }, 60000);
+  setBtnBusy(btn, false, '');
+  if (r.ok === false) {
+    toast('备份失败：' + r.message, 'err', 6000);
+    return;
+  }
+  toast(r.message || '已备份', 'ok', 5000);
+  await loadBackup();
+  if (S.page === 'backup') renderPage();
+}
+
+async function requestRestore(name) {
+  const yes = await confirmBox('恢复这份备份',
+    `将把当前数据替换为 ${name}。\n\n`
+    + '为了能回滚，重启时会先自动快照一份当前数据。\n'
+    + '恢复在下次启动时执行——现在点确定只是登记，不会立刻改动任何文件。');
+  if (!yes) return;
+  const r = await api.post('/ui/backup/restore', { name });
+  toast(r.message || (r.ok ? '已登记恢复' : '登记失败'), r.ok ? 'ok' : 'err', 6000);
+  if (r.ok) { await loadBackup(); if (S.page === 'backup') renderPage(); }
+}
+
 // ---------------------------------------------------------------- 渲染调度
 
 function renderPage() {
@@ -4660,6 +4856,7 @@ function renderPage() {
     case 'calls': renderCalls(); break;
     case 'strategy': renderStrategy(); break;
     case 'media': renderMedia(); break;
+    case 'backup': renderBackup(); break;
   }
   // 概览页之外的页面没有指标卡，updateMetrics 自然空转
 }
