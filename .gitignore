@@ -40,3 +40,6 @@ desktop.ini
 .idea/
 *.iml
 .vscode/
+tools/uitest/*-run.log
+.tmp/
+__pycache__/

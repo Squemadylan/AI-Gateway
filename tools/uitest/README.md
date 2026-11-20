@@ -25,12 +25,14 @@ sh tools/uitest/run_all.sh <UI_PORT>
 
 | 脚本 | 做什么 | 通过标准 |
 |---|---|---|
-| `api_probe.py <port>` | 75 个请求打全部 39 个端点：读、写、缺参、非法参、GET 打写接口、畸形 JSON、超大请求体 | 非 200 的必须是语义正确的 400/404/413，**不能有 500** |
+| `api_probe.py <port>` | 91 条请求打 46 个端点：读、写、缺参、非法参、GET 打写接口、畸形 JSON、超大请求体 | 非 200 的必须是语义正确的 400/404/413，**不能有 500** |
 | `ui_walk.js <baseUrl> <out.json>` | 真 Chromium 打开页面，13 页逐页点完每个按钮/开关/tab/表格行；每步判断弹窗与 Toast 并关闭 | `exceptions: 0`、`consoleErrors: 0`、`overflow: []` |
 | `ui_backup_walk.js <baseUrl> <out.json>` | 备份页的**深度**巡检：创建 → 接口 +1 → 列表行数同步 → toast → 点恢复 → 二次确认 → pending 出现 → 「等待生效」卡渲染 → 取消 → 删除 -1 → 切走切回。通用巡检点不到（恢复是两段式的，且写操作要跳过） | 12 步全通、`issues: []`、`overflow: 0`；宽/窄窗口各跑一轮 |
 | `ui_groups_walk.js <baseUrl> <out.json>` | 路由组页的**深度**巡检：新建 → 空成员被拦 → 从模型目录加成员 → 改优先级 → 规则弹窗填全 7 类条件 → 保存 → 切页回来 → auto 只读 → 删除。通用巡检点不到编辑区（它是「点了组才出现」的） | 20 步全通、`exceptions: 0`、`overflow: 0`、`issues: []` |
 | `ui_custom_walk.js <baseUrl> <out.json>` | 供应商页「自定义供应商」区块的深度巡检：中文名派生短名 → 保存 → 列表显示规范化端点 → 编辑改名（账号搬过去）→ 拉模型（预期失败要给出可读原因）→ 删除二次确认。通用巡检点不到（表单是模态窗） | 13 步全通、`errors: []`、`overflow: 0` |
 | `stress.py <port>` | keep-alive 复用连接 60 轮 × 5 请求、10 线程 × 20 并发写、41MB 请求体、畸形请求 | 全 PASS，且压力后服务仍可响应 |
+| `chaos_stream.py [模式…]` | **故障注入矩阵**：自起一个可编程故障上游（正常/429/500/半截断流/慢速 drip/96KB 单帧/占位符被劈开），再自起一个干净实例，逐个模式断言客户端可见行为；末尾做脱敏关 vs 脱敏开的 sha256 对照组 | 7 模式全符合**事先写定**的期望；对照组两侧 sha256 相同 |
+| `mutate_redactor.py [M1…]` | **变异测试**：对 `PrivacyRedactor` 手工种三个真实错（回看上限 -1 / flush 丢尾巴 / restore 漏一条映射），验证 `StreamFidelityTest` + `PrivacyRedactorTest` 是否变红；跑完无条件恢复并校验 sha256 | 三个变异全部被抓住，源码恢复后与备份哈希一致 |
 | 壳自测 | `shell/out/release/AiGatewayWeb.exe --selftest <out.txt>` | `12 / 12 passed`（命中判定表，含最大化态与按钮区） |
 
 ## 备份页为什么要单独一支
